@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "enemies-respect-encounter-zones",
+  "version-string": "1.0.0",
+  "port-version": 0,
+  "description": "Based on https://gitlab.com/colorglass/commonlibsse-sample-plugin",
+  "homepage": "https://github.com/Jampi0n/Skyrim-EnemiesRespectEncounterZonesNG",
+  "license": "GPL-3.0",
+  "features": {
+    "plugin": {
+      "description": "Build the SKSE plugin.",
+      "dependencies": [
+        "commonlibsse-ng",
+        "simpleini"
+      ]
+    }
+  },
+  "default-features": [
+    "plugin"
+  ]
+}
