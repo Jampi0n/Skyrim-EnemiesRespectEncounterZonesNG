@@ -18,6 +18,7 @@ namespace EREZ {
             return std::addressof(singleton);
         }
 
+        int logLevel = 2;
         bool relevelUniques = true;
         bool relevelSummons = true;
         bool relevelFollowers = false;
@@ -26,6 +27,7 @@ namespace EREZ {
         bool extendLevels = false;
         int noZoneMin = 1;
         int noZoneMax = 1000;
+        bool manualUninstall = false;
 
         void Load() {
             constexpr auto path = L"Data/SKSE/Plugins/EnemiesRespectEncounterZones.ini";
@@ -34,6 +36,10 @@ namespace EREZ {
             ini.SetUnicode();
 
             ini.LoadFile(path);
+
+            getIni(ini, logLevel, "iLogLevel",
+                   ";Controls how much information is logged. Level 0 has the most data, and level 6 turns logging "
+                   "off. Default: 2");
 
             getIni(ini, relevelUniques, "bRelevelUniques",
                    ";Whether unique NPCs should be leveled according to the encounter zone. ");
@@ -64,7 +70,43 @@ namespace EREZ {
             getIni(ini, noZoneMax, "iNoZoneMax",
                    ";If the NPC is not inside an encounter zone, this is used as the maximum level.");
 
+            getIni(ini, manualUninstall, "bManualUninstall",
+                   ";To remove level changes from a save, set this to true. Load the save and make a new save. "
+                   "Afterwards you can uninstall the mod. Already spawned npcs may keep their levels.");
+
             ini.SaveFile(path);
+
+            auto log = spdlog::default_logger().get();
+            auto newLogLevel = spdlog::level::level_enum::info;
+            std::string newLogLevelName = "info";
+            if (logLevel == 0) {
+                newLogLevel = spdlog::level::level_enum::trace;
+                newLogLevelName = "trace";
+            } else if (logLevel == 1) {
+                newLogLevel = spdlog::level::level_enum::debug;
+                newLogLevelName = "debug";
+            } else if (logLevel == 2) {
+                newLogLevel = spdlog::level::level_enum::info;
+                newLogLevelName = "info";
+            } else if (logLevel == 3) {
+                newLogLevel = spdlog::level::level_enum::warn;
+                newLogLevelName = "warn";
+            } else if (logLevel == 4) {
+                newLogLevel = spdlog::level::level_enum::err;
+                newLogLevelName = "err";
+            } else if (logLevel == 5) {
+                newLogLevel = spdlog::level::level_enum::critical;
+                newLogLevelName = "critical";
+            } else if (logLevel == 6) {
+                newLogLevel = spdlog::level::level_enum::off;
+                newLogLevelName = "off";
+            }
+
+            log->set_level(spdlog::level::level_enum::info);
+            log->flush_on(spdlog::level::level_enum::info);
+            logger::info("Setting log level to \"{}\".", newLogLevelName);
+            log->set_level(newLogLevel);
+            log->flush_on(newLogLevel);
         }
 
     private:
@@ -98,51 +140,82 @@ namespace EREZ {
             return &singleton;
         }
 
-        void PostSaveGame(SKSE::SerializationInterface* serde) {
-            logger::trace("PostSaveGame");
-            std::unique_lock lock(_lock);
-            // Write the number of items so we know how many times to iterate when loading.
-            auto trackedActorsCount = originalActorBaseLevels.size();
-            for (auto const& [k, v] : originalActorBaseLevels) {
-                auto baseForm = TESForm::LookupByID(k);
-                if (baseForm) {
-                    auto base = static_cast<TESActorBase*>(baseForm);
-                    if (base) {
-                        // After saving, relevel all actorbases that were previously releveled
-                        LevelActorbase(base, v.newMin, v.newMax);
-                    }
-                }
-            }
-        };
-        void PreSaveGame() {
-            logger::trace("PreSaveGame");
-            for (auto const& [k, v] : originalActorBaseLevels) {
-                auto baseForm = TESForm::LookupByID(k);
-                if (baseForm) {
-                    auto base = static_cast<TESActorBase*>(baseForm);
-                    if (base) {
-                        // Reset all actors before saving, so that the level modification is not baked into the save
-                        // Do not erase actorbase data, so that can be reapplied after the save
-                        ResetActorbase(base, false);
-                    }
-                }
-            }
-        }
-
         struct actorbaseData {
             uint16_t originalMin;
             uint16_t originalMax;
-            uint16_t newMin;
-            uint16_t newMax;
         };
+
+        void OnPreLoad() {
+            // When loading a save, reset all normal npc records
+            // This happens before dynamic npc records are created, which are based on the normal ones and will now also
+            // use the reset values
+            ResetToOriginal();
+        }
+
+        void OnPostLoad() {
+            // after the save is loaded, levels are also loaded and need to be reset when uninstalling
+            // this only affects normal npcs, so dynamic npcs will keep their level until they respawn
+            auto settings = Settings::GetSingleton();
+            if (settings->manualUninstall) {
+                ResetToOriginal();
+                logger::info("Npc levels have been reset. Mod can be uninstalled now.");
+            }
+        }
+
+        void OnDataInit() { ReadOriginalData(); }
 
     private:
         mutable std::mutex _lock;
         std::unordered_map<FormID, actorbaseData> originalActorBaseLevels;
 
+        void ResetToOriginal() {
+            logger::debug("resetting npc data...");
+            int count = 0;
+            int total = 0;
+            const auto dataHandler = RE::TESDataHandler::GetSingleton();
+            if (dataHandler) {
+                for (const auto& npc : dataHandler->GetFormArray<RE::TESNPC>()) {
+                    if (npc && npc->HasPCLevelMult()) {
+                        uint16_t originalMin = 0;
+                        uint16_t originalMax = 0;
+                        auto baseFormID = npc->GetFormID();
+                        if (originalActorBaseLevels.find(baseFormID) != originalActorBaseLevels.end()) {
+                            auto& tmp = originalActorBaseLevels.at(baseFormID);
+                            if (npc->actorData.calcLevelMin != tmp.originalMin ||
+                                npc->actorData.calcLevelMax != tmp.originalMax) {
+                                npc->actorData.calcLevelMin = tmp.originalMin;
+                                npc->actorData.calcLevelMax = tmp.originalMax;
+                                count++;
+                            }
+                            total++;
+                        }
+                    }
+                }
+            }
+            logger::debug("reset npc data for {} of {} npcs", count, total);
+        }
+
+        void ReadOriginalData() {
+            // Before any save is loaded all npc records are processed to store the original level values the original
+            // values are required for the lower and upper bounds
+            logger::debug("initializing npc data...");
+            int count = 0;
+            const auto dataHandler = RE::TESDataHandler::GetSingleton();
+            if (dataHandler) {
+                for (const auto& npc : dataHandler->GetFormArray<RE::TESNPC>()) {
+                    if (npc && npc->HasPCLevelMult()) {
+                        originalActorBaseLevels.insert_or_assign(
+                            npc->GetFormID(), actorbaseData{npc->actorData.calcLevelMin, npc->actorData.calcLevelMax});
+                        count++;
+                    }
+                }
+            }
+            logger::debug("initialized npc data for {} npcs", count);
+        }
+
         bool Filter(Actor* actor, TESActorBase* base) {
-            if (!Settings::GetSingleton()->relevelUniques &&
-                (base->actorData.actorBaseFlags & ACTOR_BASE_DATA::Flag::kUnique)) {
+            auto settings = Settings::GetSingleton();
+            if (!settings->relevelUniques && (base->actorData.actorBaseFlags & ACTOR_BASE_DATA::Flag::kUnique)) {
                 return false;
             }
             auto owner = actor->GetCommandingActor().get();
@@ -150,16 +223,16 @@ namespace EREZ {
             // other summons are likely reanimated and should not be treated differently, otherwise regular NPCs of the
             // same form id will cause conflicts
             if (owner != NULL && base->actorData.actorBaseFlags & ACTOR_BASE_DATA::Flag::kSummonable) {
-                if (!Settings::GetSingleton()->relevelSummons) {
+                if (!settings->relevelSummons) {
                     return false;
                 }
-                if (Settings::GetSingleton()->treatSummonsLikeOwner) {
+                if (settings->treatSummonsLikeOwner) {
                     if (!Filter(owner, owner->GetActorBase())) {
                         return false;
                     }
                 }
             }
-            if (!Settings::GetSingleton()->relevelFollowers && actor->IsPlayerTeammate()) {
+            if (!settings->relevelFollowers && actor->IsPlayerTeammate()) {
                 return false;
             }
             return true;
@@ -178,8 +251,7 @@ namespace EREZ {
                 originalMin = base->actorData.calcLevelMin;
                 originalMax = base->actorData.calcLevelMax;
                 pcLevelMult = level * 0.001f;
-                originalActorBaseLevels.insert_or_assign(baseFormID,
-                                                         actorbaseData{originalMin, originalMax, min, max});
+                originalActorBaseLevels.insert_or_assign(baseFormID, actorbaseData{originalMin, originalMax});
             }
 
             // change actorbase
@@ -187,17 +259,18 @@ namespace EREZ {
             base->actorData.calcLevelMax = max;
         }
 
-        void ResetActorbase(TESActorBase* base, bool erase = true) {
+        void ResetActorbase(TESActorBase* base) {
             auto baseFormID = base->GetFormID();
             if (originalActorBaseLevels.find(baseFormID) != originalActorBaseLevels.end()) {
                 auto& tmp = originalActorBaseLevels.at(baseFormID);
-                logger::trace("resetting [{}]({}): {}-{}", baseFormID, base->GetName(), tmp.originalMin,
-                              tmp.originalMax);
-                base->actorData.calcLevelMin = tmp.originalMin;
-                base->actorData.calcLevelMax = tmp.originalMax;
-                if (erase) {
-                    originalActorBaseLevels.erase(baseFormID);
+                if (base->actorData.calcLevelMin != tmp.originalMin ||
+                    base->actorData.calcLevelMin != tmp.originalMin) {
+                    logger::trace("resetting [{:X}]({}): {}-{}", baseFormID, base->GetName(), tmp.originalMin,
+                                  tmp.originalMax);
+                    base->actorData.calcLevelMin = tmp.originalMin;
+                    base->actorData.calcLevelMax = tmp.originalMax;
                 }
+
             } else {
             }
         }
@@ -220,7 +293,7 @@ namespace EREZ {
                 originalMax = tmp.originalMax;
             }
 
-            logger::trace("releveling [{}]({}): {}-{}", baseFormID, base->GetName(), originalMin, originalMax);
+            logger::trace("relevel from [{:X}]({}): {}-{}", baseFormID, base->GetName(), originalMin, originalMax);
 
             // start with default min/max
             uint16_t minEZ = settings->noZoneMin;
@@ -275,8 +348,9 @@ namespace EREZ {
                 // only consider player-leveled npcs
                 return;
             }
+            auto settings = Settings::GetSingleton();
 
-            if (!Filter(actor, base)) {
+            if (!Filter(actor, base) || settings->manualUninstall) {
                 // The actor might have been releveled earlier, because it changed follower state
                 ResetActorbase(base);
                 return;
@@ -455,9 +529,7 @@ namespace EREZ {
         return true;
     }
 
-    void OnGameLoaded(SKSE::SerializationInterface* serde){};
-    void OnGameSaved(SKSE::SerializationInterface* serde) { UnlevelManager::GetSingleton()->PostSaveGame(serde); };
-    void OnRevert(SKSE::SerializationInterface* serde){};
-    void PreSaveGame() { UnlevelManager::GetSingleton()->PreSaveGame(); }
-
+    void OnDataInit() { UnlevelManager::GetSingleton()->OnDataInit(); }
+    void OnPreLoad() { UnlevelManager::GetSingleton()->OnPreLoad(); }
+    void OnPostLoad() { UnlevelManager::GetSingleton()->OnPostLoad(); }
 }  // namespace EREZ

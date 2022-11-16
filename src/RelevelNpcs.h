@@ -5,8 +5,7 @@ using namespace SKSE;
 
 namespace EREZ {
     bool Init();
-    void OnGameLoaded(SKSE::SerializationInterface* serde);
-    void OnGameSaved(SKSE::SerializationInterface* serde);
-    void OnRevert(SKSE::SerializationInterface* serde);
-    void PreSaveGame();
+    void OnDataInit();
+    void OnPreLoad();
+    void OnPostLoad();
 }  // namespace EREZ

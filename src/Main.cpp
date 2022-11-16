@@ -29,8 +29,7 @@ namespace {
 
         std::shared_ptr<spdlog::logger> log;
         if (IsDebuggerPresent()) {
-            log = std::make_shared<spdlog::logger>(
-                "Global", std::make_shared<spdlog::sinks::msvc_sink_mt>());
+            log = std::make_shared<spdlog::logger>("Global", std::make_shared<spdlog::sinks::msvc_sink_mt>());
         } else {
             log = std::make_shared<spdlog::logger>(
                 "Global", std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), true));
@@ -77,21 +76,26 @@ namespace {
                     case MessagingInterface::kDataLoaded:  // All ESM/ESL/ESP plugins have loaded, main menu is now
                                                            // active.
                         // It is now safe to access form data.
+                        EREZ::OnDataInit();
                         break;
 
                     // Skyrim game events.
                     case MessagingInterface::kNewGame:      // Player starts a new game from main menu.
+                        EREZ::OnPreLoad();
                         break;
                     case MessagingInterface::kPreLoadGame:  // Player selected a game to load, but it hasn't loaded yet.
                                                             // Data will be the name of the loaded save.
+                        EREZ::OnPreLoad();
                         break;
                     case MessagingInterface::kPostLoadGame:  // Player's selected save game has finished loading.
                                                              // Data will be a boolean indicating whether the load was
                                                              // successful.
+                        if (static_cast<bool>(message->data)) {
+                            EREZ::OnPostLoad();
+                        }
                         break;
                     case MessagingInterface::kSaveGame:  // The player has saved a game.
                                                          // Data will be the save name.
-                        EREZ::PreSaveGame();
                         break;
                     case MessagingInterface::kDeleteGame:  // The player deleted a saved game from within the load menu.
                         break;
@@ -101,60 +105,7 @@ namespace {
         }
     }
 
-    /**
-     * Initialize the SKSE cosave system for our plugin.
-     *
-     * <p>
-     * SKSE comes with a feature called a <em>cosave</em>, an additional save file kept alongside the original Skyrim
-     * save file. SKSE plugins can write their own data to this file, and load it again when the save game is loaded,
-     * allowing them to keep custom data along with a player's save. Each plugin must have a unique ID, which is four
-     * characters long (similar to the record names used by forms in ESP files). Note however this is little-endian, so
-     * technically the 'SMPL' here ends up as 'LPMS' in the save file, unless we use a byte order swap.
-     * </p>
-     *
-     * <p>
-     * There can only be one serialization callback for save, revert (called on new game and before a load), and load
-     * for the entire plugin.
-     * </p>
-     */
-    void InitializeSerialization() {
-        // there is actually no data being written
-        // the OnGameSaved serialization callback is simply used as a "PostSave" event to restore the session data
-        // the kSaveGame message event is used as a "PreSave" event to clear the session data, so it is not included in the actual save (not the cosave)
-        log::trace("Initializing cosave serialization...");
-        auto* serde = GetSerializationInterface();
-        serde->SetUniqueID(_byteswap_ulong('EREZ'));
-        serde->SetSaveCallback(EREZ::OnGameSaved);
-        serde->SetRevertCallback(EREZ::OnRevert);
-        serde->SetLoadCallback(EREZ::OnGameLoaded);
-        log::trace("Cosave serialization initialized.");
-    }
-
-
-
-    /**
-     * Initialize our Papyrus extensions.
-     *
-     * <p>
-     * A common use of SKSE is to add new Papyrus functions. You can call a registration callback to do this. This
-     * callback will not necessarily be called immediately, if the Papyrus VM has not been initialized yet (in that case
-     * it's execution is delayed until the VM is available).
-     * </p>
-     *
-     * <p>
-     * You can call the <code>Register</code> function as many times as you want and at any time you want to register
-     * additional functions.
-     * </p>
-     */
-    /* void InitializePapyrus() {
-        log::trace("Initializing Papyrus binding...");
-        if (GetPapyrusInterface()->Register(UnlevelNpc::RegisterFuncs)) {
-            log::debug("Papyrus functions bound.");
-        } else {
-            stl::report_and_fail("Failure to register Papyrus bindings.");
-        }
-    }*/
-}
+}  // namespace
 
 /**
  * This if the main callback for initializing your SKSE plugin, called just before Skyrim runs its main function.
@@ -173,13 +124,9 @@ SKSEPluginLoad(const LoadInterface* skse) {
     auto version = plugin->GetVersion();
     log::info("{} {} is loading...", plugin->GetName(), version);
 
-
     Init(skse);
     InitializeMessaging();
-    InitializeSerialization();
-    // InitializePapyrus();
     EREZ::Init();
-    
 
     log::info("{} has finished loading.", plugin->GetName());
     return true;
