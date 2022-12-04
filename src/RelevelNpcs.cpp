@@ -382,7 +382,23 @@ namespace EREZ {
                 logger::trace("using ref EZ");
             }
             // if cell EZ does not exist it is NULL, but that's ok
+
+            std::lock_guard<std::mutex> guard(_lock);
             RelevelActorbase(base, EZ);
+
+            auto factory = IFormFactory::GetConcreteFormFactoryByType<Script>();
+            if (factory) {
+                auto consoleScript = factory->Create();
+                if (consoleScript) {
+                    // the setlevel command forces recalculation of attributes (health, magicka, stamina)
+                    auto commandStr = "setlevel " + std::to_string(base->actorData.level) + " 0 " +
+                                      std::to_string(base->actorData.calcLevelMin) + " " +
+                                      std::to_string(base->actorData.calcLevelMax) + "";
+                    consoleScript->SetCommand(commandStr);
+                    consoleScript->CompileAndRun(actor);
+                    delete consoleScript;
+                }
+            }
         }
 
     private:
