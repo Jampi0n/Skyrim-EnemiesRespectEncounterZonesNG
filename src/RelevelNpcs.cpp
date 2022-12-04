@@ -321,8 +321,8 @@ namespace EREZ {
 
             // if extend is false, limit to original levels
             if (!settings->extendLevels) {
-                minTmp = std::max(minTmp, originalMin * 1.0f);
-                maxTmp = std::min(maxTmp, originalMax * 1.0f);
+                minTmp = std::min(std::max(minTmp, originalMin * 1.0f), originalMax * 1.0f);
+                maxTmp = std::min(std::max(maxTmp, originalMin * 1.0f), originalMax * 1.0f);
             }
             uint16_t minNew = (uint16_t)minTmp;
             uint16_t maxNew = (uint16_t)maxTmp;
