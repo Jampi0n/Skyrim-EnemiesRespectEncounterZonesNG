@@ -289,11 +289,6 @@ namespace EREZ {
                         tmp.modifiedMax == base->actorData.calcLevelMax && tmp.pointer == base) {
                         dynamicDataIsValid = true;
                     } else {
-                        logger::trace("");
-                        logger::trace("");
-                        logger::trace("dynamic data is invalid!!!");
-                        logger::trace("");
-                        logger::trace("");
                         dynamicActorBaseLevels.erase(baseFormID);
                     }
                 }
