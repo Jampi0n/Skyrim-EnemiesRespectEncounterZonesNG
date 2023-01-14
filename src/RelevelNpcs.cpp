@@ -106,11 +106,12 @@ namespace EREZ {
                 "15-50. With this setting enabled, it can get levels beyond that range. For instance if the encounter "
                 "zone has a minimum level of 60, the NPC will also have a minimum level of 60.");
 
-            getIni(ini, noZoneMin, "iNoZoneMin",
-                   ";If the NPC is not inside an encounter zone, this is used as the minimum level.");
-            getIni(ini, noZoneMax, "iNoZoneMax",
-                   ";If the NPC is not inside an encounter zone, this is used as the maximum level. Zero means infinite maximum level.");
             getIni(ini, noZoneSkip, "bNoZoneSkip", ";If the NPC is not inside an encounter zone, the NPC is skipped.");
+            getIni(ini, noZoneMin, "iNoZoneMin",
+                   ";If the NPC is not inside an encounter zone, this is used as the minimum level if bNoZoneSkip is disabled.");
+            getIni(ini, noZoneMax, "iNoZoneMax",
+                   ";If the NPC is not inside an encounter zone, this is used as the maximum level if bNoZoneSkip is disabled. Zero means infinite maximum level.");
+
 
             getIni(ini, pluginFilterInvert, "bPluginFilterInvert",
                    ";Inverts the plugin filter, meaning that ONLY filtered NPCs have their levels changed. By default, "
