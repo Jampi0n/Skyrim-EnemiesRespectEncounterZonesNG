@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "SimpleIni.h"
@@ -27,7 +28,42 @@ namespace EREZ {
         bool extendLevels = false;
         int noZoneMin = 1;
         int noZoneMax = 1000;
+
+        bool pluginFilterInvert = false;
+        std::string pluginFilterMaster = "";
+        std::string pluginFilterAny = "";
+        std::string pluginFilterWinning = "";
+
+        bool forceAutoCalcAttributes = true;
+
         bool manualUninstall = false;
+
+        std::unordered_set<std::string> pluginFilterMasterList;
+        std::unordered_set<std::string> pluginFilterAnyList;
+        std::unordered_set<std::string> pluginFilterWinningList;
+        bool usePluginFilter = false;
+
+        std::string trim(const std::string& str, const std::string& whitespace = " \t") {
+            const auto strBegin = str.find_first_not_of(whitespace);
+            if (strBegin == std::string::npos) return "";  // no content
+
+            const auto strEnd = str.find_last_not_of(whitespace);
+            const auto strRange = strEnd - strBegin + 1;
+
+            return str.substr(strBegin, strRange);
+        }
+
+        std::unordered_set<std::string> splitString(const std::string& str, char sep) {
+            std::string myStr = trim(str);
+            std::stringstream test(myStr);
+            std::string element;
+            std::unordered_set<std::string> result;
+
+            while (std::getline(test, element, sep)) {
+                result.insert(element);
+            }
+            return result;
+        }
 
         void Load() {
             constexpr auto path = L"Data/SKSE/Plugins/EnemiesRespectEncounterZones.ini";
@@ -70,6 +106,23 @@ namespace EREZ {
             getIni(ini, noZoneMax, "iNoZoneMax",
                    ";If the NPC is not inside an encounter zone, this is used as the maximum level.");
 
+            getIni(ini, pluginFilterInvert, "bPluginFilterInvert",
+                   ";Inverts the plugin filter, meaning that ONLY filtered NPCs have their levels changed. By default, "
+                   "all but the filtered NPCs have their levels changed.");
+            getIni(ini, pluginFilterMaster, "sPluginFilterMaster",
+                   ";NPC records that are master records in these plugins are filtered. Comma separated list, for "
+                   "example: Skyrim.esm,Dawguard.esm");
+            getIni(ini, pluginFilterAny, "sPluginFilterAny",
+                   ";NPCs records that are changed in these plugins are filtered. Comma separated list, for example: "
+                   "Skyrim.esm,Dawguard.esm");
+            getIni(ini, pluginFilterWinning, "sPluginFilterWinning",
+                   ";NPCs records that are winning records in these plugins are filtered. Comma separated list, for "
+                   "example: Skyrim.esm,Dawguard.esm");
+
+            getIni(ini, forceAutoCalcAttributes, "bForceAutoCalcAttributes",
+                   ";Forces NPCs to recalculate their stats when the level is changed. This ensures attributes like "
+                   "health are calculated using the new level.");
+
             getIni(ini, manualUninstall, "bManualUninstall",
                    ";To remove level changes from a save, set this to true. Load the save and make a new save. "
                    "Afterwards you can uninstall the mod. Already spawned npcs may keep their levels.");
@@ -107,6 +160,22 @@ namespace EREZ {
             logger::info("Setting log level to \"{}\".", newLogLevelName);
             log->set_level(newLogLevel);
             log->flush_on(newLogLevel);
+
+            pluginFilterMasterList = splitString(pluginFilterMaster, ',');
+            pluginFilterAnyList = splitString(pluginFilterAny, ',');
+            pluginFilterWinningList = splitString(pluginFilterWinning, ',');
+            usePluginFilter =
+                (pluginFilterMasterList.size() + pluginFilterAnyList.size() + pluginFilterWinningList.size()) > 0;
+            logger::info("Use plugin filter: {}.", usePluginFilter);
+            for (auto& str : pluginFilterMasterList) {
+                logger::info("Filtering master npc records from {}.", str);
+            }
+            for (auto& str : pluginFilterAnyList) {
+                logger::info("Filtering any npc records from {}.", str);
+            }
+            for (auto& str : pluginFilterWinningList) {
+                logger::info("Filtering winning npc records from {}.", str);
+            }
         }
 
     private:
@@ -129,6 +198,12 @@ namespace EREZ {
             defaultValue = std::stof(ini.GetValue(iniCategory, settingName, std::to_string(defaultValue).c_str()));
             ini.SetValue(iniCategory, settingName, std::to_string(defaultValue).c_str(), a_comment);
         }
+
+        static void getIni(CSimpleIniA& ini, std::string& defaultValue, const char* settingName,
+                           const char* a_comment) {
+            defaultValue = ini.GetValue(iniCategory, settingName, defaultValue.c_str());
+            ini.SetValue(iniCategory, settingName, defaultValue.c_str(), a_comment);
+        }
     };
 
     inline const auto Record_originalActorBaseLevels = _byteswap_ulong('TACT');
@@ -145,11 +220,21 @@ namespace EREZ {
             uint16_t originalMax;
         };
 
+        struct dynamicData {
+            uint16_t originalMin;
+            uint16_t originalMax;
+            uint16_t modifiedMin;
+            uint16_t modifiedMax;
+            void* pointer;
+        };
+
         void OnPreLoad() {
             // When loading a save, reset all normal npc records
             // This happens before dynamic npc records are created, which are based on the normal ones and will now also
             // use the reset values
             ResetToOriginal();
+            // Reset all dynamic data, as dynamic FormIDs are recycled, so they may now refer to different objects
+            dynamicActorBaseLevels.clear();
         }
 
         void OnPostLoad() {
@@ -167,9 +252,75 @@ namespace EREZ {
     private:
         mutable std::mutex _lock;
         std::unordered_map<FormID, actorbaseData> originalActorBaseLevels;
+        std::unordered_map<FormID, dynamicData> dynamicActorBaseLevels;
+
+        void SetActorBaseData(TESNPC* base, uint16_t originalMin, uint16_t originalMax, uint16_t min, uint16_t max) {
+            auto baseFormID = base->GetFormID();
+            if (baseFormID >= 0xff000000) {
+                dynamicActorBaseLevels.insert_or_assign(
+                    baseFormID, dynamicData{originalMin, originalMax, min, max, base});
+            }
+            base->actorData.calcLevelMin = min;
+            base->actorData.calcLevelMax = max;
+        }
+
+        actorbaseData GetOriginalActorBaseData(TESNPC* base) {
+            auto baseFormID = base->GetFormID();
+            uint16_t originalMin = 0;
+            uint16_t originalMax = 0;
+
+            const void* address = static_cast<const void*>(base);
+            std::stringstream ss;
+            ss << address;
+            auto str = ss.str();
+            logger::trace("address = {}", str);
+            if (baseFormID >= 0xff000000) {
+                logger::trace("dynamic base = {:X}", baseFormID);
+                bool dynamicDataIsValid = false;
+
+                if (dynamicActorBaseLevels.find(baseFormID) != dynamicActorBaseLevels.end()) {
+                    auto& tmp = dynamicActorBaseLevels.at(baseFormID);
+                    logger::trace("{}, {}, {} vs {}, {}, {}", tmp.modifiedMin, tmp.modifiedMax, tmp.pointer,
+                                  base->actorData.calcLevelMin, base->actorData.calcLevelMax,
+                                  (void*) base);
+                    if (tmp.modifiedMin == base->actorData.calcLevelMin &&
+                        tmp.modifiedMax == base->actorData.calcLevelMax &&
+                        tmp.pointer == base) {
+                        dynamicDataIsValid = true;
+                    } else {
+                        logger::trace("");
+                        logger::trace("");
+                        logger::trace("dynamic data is invalid!!!");
+                        logger::trace("");
+                        logger::trace("");
+                        dynamicActorBaseLevels.erase(baseFormID);
+                    }
+                }
+                if (!dynamicDataIsValid) {
+                    originalMin = base->actorData.calcLevelMin;
+                    originalMax = base->actorData.calcLevelMax;
+                } else {
+                    auto& tmp = dynamicActorBaseLevels.at(baseFormID);
+                    originalMin = tmp.originalMin;
+                    originalMax = tmp.originalMax;
+                }
+            } else {
+                logger::trace("static base = {:X}", baseFormID);
+                if (originalActorBaseLevels.find(baseFormID) == originalActorBaseLevels.end()) {
+                    originalMin = base->actorData.calcLevelMin;
+                    originalMax = base->actorData.calcLevelMax;
+                    originalActorBaseLevels.insert_or_assign(baseFormID, actorbaseData{originalMin, originalMax});
+                } else {
+                    auto& tmp = originalActorBaseLevels.at(baseFormID);
+                    originalMin = tmp.originalMin;
+                    originalMax = tmp.originalMax;
+                }
+            }
+            return actorbaseData{originalMin, originalMax};
+        }
 
         void ResetToOriginal() {
-            logger::debug("resetting npc data...");
+            logger::debug("Resetting npc data...");
             int count = 0;
             int total = 0;
             const auto dataHandler = RE::TESDataHandler::GetSingleton();
@@ -192,13 +343,13 @@ namespace EREZ {
                     }
                 }
             }
-            logger::debug("reset npc data for {} of {} npcs", count, total);
+            logger::debug("Reset npc data for {} of {} npcs.", count, total);
         }
 
         void ReadOriginalData() {
             // Before any save is loaded all npc records are processed to store the original level values the original
             // values are required for the lower and upper bounds
-            logger::debug("initializing npc data...");
+            logger::debug("Initializing npc data...");
             int count = 0;
             const auto dataHandler = RE::TESDataHandler::GetSingleton();
             if (dataHandler) {
@@ -210,10 +361,89 @@ namespace EREZ {
                     }
                 }
             }
-            logger::debug("initialized npc data for {} npcs", count);
+            logger::debug("Initialized npc data for {} npcs.", count);
         }
 
-        bool Filter(Actor* actor, TESActorBase* base) {
+        bool PluginFilter(Actor* actor, TESNPC* base) {
+            auto settings = Settings::GetSingleton();
+            if (!settings->usePluginFilter) {
+                return true;
+            }
+            auto root = base->GetRootFaceNPC();
+            if (root) {
+                auto filesArray = root->sourceFiles.array;
+                if (filesArray) {
+                    auto first = 0;
+                    auto last = filesArray->size() - 1;
+                    std::string fileNameMaster = filesArray->data()[first]->fileName;
+                    std::string fileNameWinning = filesArray->data()[last]->fileName;
+                    if (!settings->pluginFilterInvert) {
+                        if (settings->pluginFilterMasterList.find(fileNameMaster) !=
+                            settings->pluginFilterMasterList.end()) {
+                            return false;
+                        }
+                        if (settings->pluginFilterWinningList.find(fileNameWinning) !=
+                            settings->pluginFilterWinningList.end()) {
+                            return false;
+                        }
+                        if (settings->pluginFilterAnyList.size() > 0) {
+                            for (int i = first; i <= last; i++) {
+                                std::string fileNameAny = filesArray->data()[i]->fileName;
+                                if (settings->pluginFilterAnyList.find(fileNameAny) !=
+                                    settings->pluginFilterAnyList.end()) {
+                                    return false;
+                                }
+                            }
+                        }
+                    } else {
+                        bool include = false;
+                        if (settings->pluginFilterMasterList.find(fileNameMaster) !=
+                            settings->pluginFilterMasterList.end()) {
+                            include = true;
+                        } else {
+                            if (settings->pluginFilterWinningList.find(fileNameWinning) !=
+                                settings->pluginFilterWinningList.end()) {
+                                include = true;
+                            } else {
+                                if (settings->pluginFilterAnyList.size() > 0) {
+                                    for (int i = first; i <= last; i++) {
+                                        std::string fileNameAny = filesArray->data()[i]->fileName;
+                                        if (settings->pluginFilterAnyList.find(fileNameAny) !=
+                                            settings->pluginFilterAnyList.end()) {
+                                            include = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (!include) {
+                            return false;
+                        }
+                    }
+
+                } else {
+                    logger::warn("Cannot find plugins referencing NPC. Plugin filter may not work as expected.");
+                    logger::warn("NPC information: name = {}, ref id = {:X}, base id = {:X}, root id = {:X}",
+                                 actor->GetName(), actor->GetFormID(), base->GetFormID(), root->GetFormID());
+                }
+            } else {
+                logger::warn("Cannot find plugins referencing NPC. Plugin filter may not work as expected.");
+                logger::warn("NPC information: name = {}, ref id = {:X}, base id = {:X}", actor->GetName(),
+                             actor->GetFormID(), base->GetFormID());
+            }
+            return true;
+        }
+
+        bool StaticFilter(Actor* actor, TESNPC* base) {
+            if (!base->HasPCLevelMult()) {
+                // only consider player-leveled npcs
+                return false;
+            }
+            return PluginFilter(actor, base);
+        }
+
+        bool Filter(Actor* actor, TESNPC* base) {
             auto settings = Settings::GetSingleton();
             if (!settings->relevelUniques && (base->actorData.actorBaseFlags & ACTOR_BASE_DATA::Flag::kUnique)) {
                 return false;
@@ -238,62 +468,36 @@ namespace EREZ {
             return true;
         }
 
-        void LevelActorbase(TESActorBase* base, uint16_t min, uint16_t max) {
-            auto baseFormID = base->GetFormID();
-            float pcLevelMult = 0;
-            uint16_t originalMin = 0;
-            uint16_t originalMax = 0;
-            uint32_t level = (uint32_t)base->actorData.level;
-
-            // store original level data, if not yet stored
-            // importantly, if it is not stored yet, the current values in the actorbase are still the original ones
-            if (originalActorBaseLevels.find(baseFormID) == originalActorBaseLevels.end()) {
-                originalMin = base->actorData.calcLevelMin;
-                originalMax = base->actorData.calcLevelMax;
-                pcLevelMult = level * 0.001f;
-                originalActorBaseLevels.insert_or_assign(baseFormID, actorbaseData{originalMin, originalMax});
-            }
-
-            // change actorbase
-            base->actorData.calcLevelMin = min;
-            base->actorData.calcLevelMax = max;
-        }
-
-        void ResetActorbase(TESActorBase* base) {
+        void ResetActorbase(TESNPC* base) {
             auto baseFormID = base->GetFormID();
             if (originalActorBaseLevels.find(baseFormID) != originalActorBaseLevels.end()) {
                 auto& tmp = originalActorBaseLevels.at(baseFormID);
                 if (base->actorData.calcLevelMin != tmp.originalMin ||
                     base->actorData.calcLevelMin != tmp.originalMin) {
-                    logger::trace("resetting [{:X}]({}): {}-{}", baseFormID, base->GetName(), tmp.originalMin,
-                                  tmp.originalMax);
+                    logger::trace("Resetting [{:X}]({}) to level range {}-{}.", baseFormID, base->GetName(),
+                                  tmp.originalMin, tmp.originalMax);
                     base->actorData.calcLevelMin = tmp.originalMin;
                     base->actorData.calcLevelMax = tmp.originalMax;
                 }
-
-            } else {
             }
         }
 
-        void RelevelActorbase(TESActorBase* base, BGSEncounterZone* EZ) {
+        void RelevelActorbase(TESNPC* base, BGSEncounterZone* EZ) {
             uint32_t level = (uint32_t)base->actorData.level;
             auto settings = Settings::GetSingleton();
             auto baseFormID = base->GetFormID();
+            auto root = base->GetRootFaceNPC();
+            if (root == NULL) {
+                root = base;
+            }
             float pcLevelMult = level * 0.001f;
             uint16_t originalMin = 0;
             uint16_t originalMax = 0;
 
             // lookup original level data
-            if (originalActorBaseLevels.find(baseFormID) == originalActorBaseLevels.end()) {
-                originalMin = base->actorData.calcLevelMin;
-                originalMax = base->actorData.calcLevelMax;
-            } else {
-                auto& tmp = originalActorBaseLevels.at(baseFormID);
-                originalMin = tmp.originalMin;
-                originalMax = tmp.originalMax;
-            }
-
-            logger::trace("relevel from [{:X}]({}): {}-{}", baseFormID, base->GetName(), originalMin, originalMax);
+            auto original = GetOriginalActorBaseData(base);
+            originalMin = original.originalMin;
+            originalMax = original.originalMax;
 
             // start with default min/max
             uint16_t minEZ = settings->noZoneMin;
@@ -337,15 +541,18 @@ namespace EREZ {
 
             // so far nothing was changed
             // now perform relevel
-            LevelActorbase(base, minNew, maxNew);
-            logger::trace("to min={}, max={}", base->actorData.calcLevelMin, base->actorData.calcLevelMax);
+            SetActorBaseData(base, originalMin, originalMax, minNew, maxNew);
+
+            logger::trace("    Relevel base [{:X}/{:X}]({}) from level range {}-{} to level range {}-{}.", baseFormID,
+                          root->GetFormID(), base->GetName(), originalMin, originalMax, base->actorData.calcLevelMin,
+                          base->actorData.calcLevelMax);
         }
+
 
     public:
         void ProcessActor(Actor* actor) {
             auto base = actor->GetActorBase();
-            if (!base->HasPCLevelMult()) {
-                // only consider player-leveled npcs
+            if (!StaticFilter(actor, base)) {
                 return;
             }
             auto settings = Settings::GetSingleton();
@@ -365,38 +572,42 @@ namespace EREZ {
             if (!loadedData) {
                 return;
             }
+            logger::trace("Releveling reference [{:X}]({}).", actor->GetFormID(), actor->GetName());
 
             // Use actor ref encounter zone
             // This is a hardcoded encounter zone for specific actor references and is used in exteriors, where not all
             // enemies in the current cell belong to the same EZ
+
             auto EZ = actor->extraList.GetEncounterZone();
-            if (EZ == NULL) {
+            if (EZ == NULL || EZ->GetFormID() == 0x1E) {
                 // If no actor ref EZ exists, use cell EZ
                 EZ = loadedData->encounterZone;
-                if (EZ != NULL) {
-                    logger::trace("using loc EZ");
+                if (EZ != NULL && EZ->GetFormID() != 0x1E) {
+                    logger::trace("    Using location encounter zone : {:X}", EZ->GetFormID());
                 } else {
-                    logger::trace("no EZ");
+                    logger::trace("    No encounter zone found");
                 }
             } else {
-                logger::trace("using ref EZ");
+                logger::trace("    Using reference encounter zone: {:X}", EZ->GetFormID());
             }
             // if cell EZ does not exist it is NULL, but that's ok
 
             std::lock_guard<std::mutex> guard(_lock);
             RelevelActorbase(base, EZ);
 
-            auto factory = IFormFactory::GetConcreteFormFactoryByType<Script>();
-            if (factory) {
-                auto consoleScript = factory->Create();
-                if (consoleScript) {
-                    // the setlevel command forces recalculation of attributes (health, magicka, stamina)
-                    auto commandStr = "setlevel " + std::to_string(base->actorData.level) + " 0 " +
-                                      std::to_string(base->actorData.calcLevelMin) + " " +
-                                      std::to_string(base->actorData.calcLevelMax) + "";
-                    consoleScript->SetCommand(commandStr);
-                    consoleScript->CompileAndRun(actor);
-                    delete consoleScript;
+            if (settings->forceAutoCalcAttributes) {
+                auto factory = IFormFactory::GetConcreteFormFactoryByType<Script>();
+                if (factory) {
+                    auto consoleScript = factory->Create();
+                    if (consoleScript) {
+                        // the setlevel command forces recalculation of attributes (health, magicka, stamina)
+                        auto commandStr = "setlevel " + std::to_string(base->actorData.level) + " 0 " +
+                                          std::to_string(base->actorData.calcLevelMin) + " " +
+                                          std::to_string(base->actorData.calcLevelMax) + "";
+                        consoleScript->SetCommand(commandStr);
+                        consoleScript->CompileAndRun(actor);
+                        delete consoleScript;
+                    }
                 }
             }
         }
