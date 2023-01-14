@@ -12,6 +12,31 @@
 
 namespace EREZ {
 
+    class Helper {
+    public:
+        static std::string trim(const std::string& str, const std::string& whitespace = " \t") {
+            const auto strBegin = str.find_first_not_of(whitespace);
+            if (strBegin == std::string::npos) return "";  // no content
+
+            const auto strEnd = str.find_last_not_of(whitespace);
+            const auto strRange = strEnd - strBegin + 1;
+
+            return str.substr(strBegin, strRange);
+        }
+
+        static std::unordered_set<std::string> splitString(const std::string& str, char sep) {
+            std::string myStr = trim(str);
+            std::stringstream test(myStr);
+            std::string element;
+            std::unordered_set<std::string> result;
+
+            while (std::getline(test, element, sep)) {
+                result.insert(element);
+            }
+            return result;
+        }
+    };
+
     class Settings {
     public:
         [[nodiscard]] static Settings* GetSingleton() {
@@ -28,6 +53,7 @@ namespace EREZ {
         bool extendLevels = false;
         int noZoneMin = 1;
         int noZoneMax = 1000;
+        bool noZoneSkip = true;
 
         bool pluginFilterInvert = false;
         std::string pluginFilterMaster = "";
@@ -42,28 +68,6 @@ namespace EREZ {
         std::unordered_set<std::string> pluginFilterAnyList;
         std::unordered_set<std::string> pluginFilterWinningList;
         bool usePluginFilter = false;
-
-        std::string trim(const std::string& str, const std::string& whitespace = " \t") {
-            const auto strBegin = str.find_first_not_of(whitespace);
-            if (strBegin == std::string::npos) return "";  // no content
-
-            const auto strEnd = str.find_last_not_of(whitespace);
-            const auto strRange = strEnd - strBegin + 1;
-
-            return str.substr(strBegin, strRange);
-        }
-
-        std::unordered_set<std::string> splitString(const std::string& str, char sep) {
-            std::string myStr = trim(str);
-            std::stringstream test(myStr);
-            std::string element;
-            std::unordered_set<std::string> result;
-
-            while (std::getline(test, element, sep)) {
-                result.insert(element);
-            }
-            return result;
-        }
 
         void Load() {
             constexpr auto path = L"Data/SKSE/Plugins/EnemiesRespectEncounterZones.ini";
@@ -101,10 +105,12 @@ namespace EREZ {
                 ";NPC levels can be adjusted outside of their regular bounds. A NPC may be set to the level range "
                 "15-50. With this setting enabled, it can get levels beyond that range. For instance if the encounter "
                 "zone has a minimum level of 60, the NPC will also have a minimum level of 60.");
+
             getIni(ini, noZoneMin, "iNoZoneMin",
                    ";If the NPC is not inside an encounter zone, this is used as the minimum level.");
             getIni(ini, noZoneMax, "iNoZoneMax",
-                   ";If the NPC is not inside an encounter zone, this is used as the maximum level.");
+                   ";If the NPC is not inside an encounter zone, this is used as the maximum level. Zero means infinite maximum level.");
+            getIni(ini, noZoneSkip, "bNoZoneSkip", ";If the NPC is not inside an encounter zone, the NPC is skipped.");
 
             getIni(ini, pluginFilterInvert, "bPluginFilterInvert",
                    ";Inverts the plugin filter, meaning that ONLY filtered NPCs have their levels changed. By default, "
@@ -161,9 +167,9 @@ namespace EREZ {
             log->set_level(newLogLevel);
             log->flush_on(newLogLevel);
 
-            pluginFilterMasterList = splitString(pluginFilterMaster, ',');
-            pluginFilterAnyList = splitString(pluginFilterAny, ',');
-            pluginFilterWinningList = splitString(pluginFilterWinning, ',');
+            pluginFilterMasterList = Helper::splitString(pluginFilterMaster, ',');
+            pluginFilterAnyList = Helper::splitString(pluginFilterAny, ',');
+            pluginFilterWinningList = Helper::splitString(pluginFilterWinning, ',');
             usePluginFilter =
                 (pluginFilterMasterList.size() + pluginFilterAnyList.size() + pluginFilterWinningList.size()) > 0;
             logger::info("Use plugin filter: {}.", usePluginFilter);
@@ -257,8 +263,8 @@ namespace EREZ {
         void SetActorBaseData(TESNPC* base, uint16_t originalMin, uint16_t originalMax, uint16_t min, uint16_t max) {
             auto baseFormID = base->GetFormID();
             if (baseFormID >= 0xff000000) {
-                dynamicActorBaseLevels.insert_or_assign(
-                    baseFormID, dynamicData{originalMin, originalMax, min, max, base});
+                dynamicActorBaseLevels.insert_or_assign(baseFormID,
+                                                        dynamicData{originalMin, originalMax, min, max, base});
             }
             base->actorData.calcLevelMin = min;
             base->actorData.calcLevelMax = max;
@@ -273,19 +279,13 @@ namespace EREZ {
             std::stringstream ss;
             ss << address;
             auto str = ss.str();
-            logger::trace("address = {}", str);
             if (baseFormID >= 0xff000000) {
-                logger::trace("dynamic base = {:X}", baseFormID);
                 bool dynamicDataIsValid = false;
 
                 if (dynamicActorBaseLevels.find(baseFormID) != dynamicActorBaseLevels.end()) {
                     auto& tmp = dynamicActorBaseLevels.at(baseFormID);
-                    logger::trace("{}, {}, {} vs {}, {}, {}", tmp.modifiedMin, tmp.modifiedMax, tmp.pointer,
-                                  base->actorData.calcLevelMin, base->actorData.calcLevelMax,
-                                  (void*) base);
                     if (tmp.modifiedMin == base->actorData.calcLevelMin &&
-                        tmp.modifiedMax == base->actorData.calcLevelMax &&
-                        tmp.pointer == base) {
+                        tmp.modifiedMax == base->actorData.calcLevelMax && tmp.pointer == base) {
                         dynamicDataIsValid = true;
                     } else {
                         logger::trace("");
@@ -305,7 +305,6 @@ namespace EREZ {
                     originalMax = tmp.originalMax;
                 }
             } else {
-                logger::trace("static base = {:X}", baseFormID);
                 if (originalActorBaseLevels.find(baseFormID) == originalActorBaseLevels.end()) {
                     originalMin = base->actorData.calcLevelMin;
                     originalMax = base->actorData.calcLevelMax;
@@ -482,7 +481,7 @@ namespace EREZ {
             }
         }
 
-        void RelevelActorbase(TESNPC* base, BGSEncounterZone* EZ) {
+        void RelevelActorbase(TESNPC* base, uint16_t minLevel, uint16_t maxLevel) {
             uint32_t level = (uint32_t)base->actorData.level;
             auto settings = Settings::GetSingleton();
             auto baseFormID = base->GetFormID();
@@ -499,28 +498,21 @@ namespace EREZ {
             originalMin = original.originalMin;
             originalMax = original.originalMax;
 
-            // start with default min/max
-            uint16_t minEZ = settings->noZoneMin;
-            uint16_t maxEZ = settings->noZoneMax;
-
-            // use encounter zone min/max, if valid
-            if (EZ) {
-                if (EZ->data.minLevel > 0) {
-                    minEZ = EZ->data.minLevel;
-                }
-                if (EZ->data.maxLevel > 0) {
-                    maxEZ = EZ->data.maxLevel;
-                }
-            }
-
             // use float for calculations
-            float minTmp = minEZ;
-            float maxTmp = maxEZ;
+            float minTmp = minLevel;
+            float maxTmp = maxLevel;
 
             // player mult
+            float factor = 1.0;
             if (settings->includeLevelMult) {
-                minTmp *= pcLevelMult;
-                maxTmp *= pcLevelMult;
+                factor = pcLevelMult;
+                minTmp *= factor;
+                maxTmp *= factor;
+            }
+
+            if (maxLevel == 0) {
+                // no maximum level
+                maxTmp = 255;
             }
 
             // if extend is false, limit to original levels
@@ -543,11 +535,11 @@ namespace EREZ {
             // now perform relevel
             SetActorBaseData(base, originalMin, originalMax, minNew, maxNew);
 
-            logger::trace("    Relevel base [{:X}/{:X}]({}) from level range {}-{} to level range {}-{}.", baseFormID,
-                          root->GetFormID(), base->GetName(), originalMin, originalMax, base->actorData.calcLevelMin,
-                          base->actorData.calcLevelMax);
-        }
 
+            logger::trace("    Relevel base [{:X}/{:X}]({}) from level range {}-{} to level range {}-{} using factor {}.", baseFormID,
+                          root->GetFormID(), base->GetName(), originalMin, originalMax, base->actorData.calcLevelMin,
+                          base->actorData.calcLevelMax, factor);
+        }
 
     public:
         void ProcessActor(Actor* actor) {
@@ -578,22 +570,68 @@ namespace EREZ {
             // This is a hardcoded encounter zone for specific actor references and is used in exteriors, where not all
             // enemies in the current cell belong to the same EZ
 
+            // 0x1E is a special encounter zone object that is used to indicate no EZ in some cases, treat same as no EZ
+            // at all
+
+            std::string ezMessagePrefix;
+
             auto EZ = actor->extraList.GetEncounterZone();
+            bool validEZ = false;
+           
             if (EZ == NULL || EZ->GetFormID() == 0x1E) {
                 // If no actor ref EZ exists, use cell EZ
                 EZ = loadedData->encounterZone;
                 if (EZ != NULL && EZ->GetFormID() != 0x1E) {
-                    logger::trace("    Using location encounter zone : {:X}", EZ->GetFormID());
-                } else {
-                    logger::trace("    No encounter zone found");
+                    ezMessagePrefix = "Using location encounter zone";
+                    validEZ = true;
                 }
             } else {
-                logger::trace("    Using reference encounter zone: {:X}", EZ->GetFormID());
+                ezMessagePrefix = "Using reference encounter zone";
+                validEZ = true;
             }
-            // if cell EZ does not exist it is NULL, but that's ok
+
+            if (!validEZ) {
+                if (settings->noZoneSkip) {
+                    ResetActorbase(base);
+                    logger::trace("    No encounter zone found, skipping NPC.");
+                    return;
+                } else {
+                    ezMessagePrefix = "No encounter zone found, using iNoZoneMin and iNoZoneMax instead";
+                }
+            }
+
+            // start with default min/max
+            uint16_t minEZ = settings->noZoneMin;
+            uint16_t maxEZ = settings->noZoneMax;
+
+            // use encounter zone min/max, if valid
+            if (validEZ) {
+                minEZ = EZ->data.minLevel;
+                maxEZ = EZ->data.maxLevel;
+            }
+            if (minEZ < 1) {
+                minEZ = 1;
+            }
+            if (maxEZ < 1) {
+                maxEZ = 0;
+            }
+            std::string levelRange;
+            if (maxEZ == 0) {
+                levelRange = std::to_string(minEZ) + "+";
+            } else {
+                levelRange = std::to_string(minEZ) + "-" + std::to_string(maxEZ);
+            }
+
+            if (validEZ) {
+                logger::trace("    {}: [{:X}] ({})", ezMessagePrefix, EZ->GetFormID(), levelRange);
+            } else {
+                logger::trace("    {}: ({})", ezMessagePrefix, levelRange);
+            }
+
+
 
             std::lock_guard<std::mutex> guard(_lock);
-            RelevelActorbase(base, EZ);
+            RelevelActorbase(base, minEZ, maxEZ);
 
             if (settings->forceAutoCalcAttributes) {
                 auto factory = IFormFactory::GetConcreteFormFactoryByType<Script>();
