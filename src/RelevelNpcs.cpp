@@ -10,6 +10,12 @@
 
 #include "SimpleIni.h"
 
+RE::BGSEncounterZone* GetEncounterZone(RE::TESObjectREFR* This) {
+    using func_t = decltype(&GetEncounterZone);
+    REL::Relocation<func_t> func{RELOCATION_ID(19797, 20202)};
+    return func(This);
+}
+
 namespace EREZ {
 
     class Helper {
@@ -532,7 +538,7 @@ namespace EREZ {
             SetActorBaseData(base, originalMin, originalMax, minNew, maxNew);
 
 
-            logger::trace("    Relevel base [{:X}/{:X}]({}) from level range {}-{} to level range {}-{} using factor {}.", baseFormID,
+            logger::trace("    Relevel base [{:X}/{:X}]({}) from level range {}-{} to level range {}-{} using factor {} .", baseFormID,
                           root->GetFormID(), base->GetName(), originalMin, originalMax, base->actorData.calcLevelMin,
                           base->actorData.calcLevelMax, factor);
         }
@@ -562,31 +568,31 @@ namespace EREZ {
             }
             logger::trace("Releveling reference [{:X}]({}).", actor->GetFormID(), actor->GetName());
 
-            // Use actor ref encounter zone
-            // This is a hardcoded encounter zone for specific actor references and is used in exteriors, where not all
-            // enemies in the current cell belong to the same EZ
+
+
+
+            std::string ezMessagePrefix;
 
             // 0x1E is a special encounter zone object that is used to indicate no EZ in some cases, treat same as no EZ
             // at all
 
-            std::string ezMessagePrefix;
+            // priority:
+            // 1. regular GetEncounterZone function
+            // 2. read encounter zone from extra list
+            // 3. read encounter zone from cell
 
-            auto EZ = actor->extraList.GetEncounterZone();
-            bool validEZ = false;
-           
-            if (EZ == NULL || EZ->GetFormID() == 0x1E) {
-                // If no actor ref EZ exists, use cell EZ
+            auto EZ = GetEncounterZone(actor);
+            if (!EZ || EZ->GetFormID() == 0x1E) {
+                EZ = actor->extraList.GetEncounterZone();
+            }
+            if (!EZ || EZ->GetFormID() == 0x1E) {
                 EZ = loadedData->encounterZone;
-                if (EZ != NULL && EZ->GetFormID() != 0x1E) {
-                    ezMessagePrefix = "Using location encounter zone";
-                    validEZ = true;
-                }
-            } else {
-                ezMessagePrefix = "Using reference encounter zone";
-                validEZ = true;
+            }
+            if (!EZ || EZ->GetFormID() == 0x1E) {
+                EZ = NULL;
             }
 
-            if (!validEZ) {
+            if (!EZ) {
                 if (settings->noZoneSkip) {
                     ResetActorbase(base);
                     logger::trace("    No encounter zone found, skipping NPC.");
@@ -601,7 +607,7 @@ namespace EREZ {
             uint16_t maxEZ = settings->noZoneMax;
 
             // use encounter zone min/max, if valid
-            if (validEZ) {
+            if (EZ) {
                 minEZ = EZ->data.minLevel;
                 maxEZ = EZ->data.maxLevel;
             }
@@ -618,7 +624,7 @@ namespace EREZ {
                 levelRange = std::to_string(minEZ) + "-" + std::to_string(maxEZ);
             }
 
-            if (validEZ) {
+            if (EZ) {
                 logger::trace("    {}: [{:X}] ({})", ezMessagePrefix, EZ->GetFormID(), levelRange);
             } else {
                 logger::trace("    {}: ({})", ezMessagePrefix, levelRange);
