@@ -114,10 +114,11 @@ namespace EREZ {
 
             getIni(ini, noZoneSkip, "bNoZoneSkip", ";If the NPC is not inside an encounter zone, the NPC is skipped.");
             getIni(ini, noZoneMin, "iNoZoneMin",
-                   ";If the NPC is not inside an encounter zone, this is used as the minimum level if bNoZoneSkip is disabled.");
+                   ";If the NPC is not inside an encounter zone, this is used as the minimum level if bNoZoneSkip is "
+                   "disabled.");
             getIni(ini, noZoneMax, "iNoZoneMax",
-                   ";If the NPC is not inside an encounter zone, this is used as the maximum level if bNoZoneSkip is disabled. Zero means infinite maximum level.");
-
+                   ";If the NPC is not inside an encounter zone, this is used as the maximum level if bNoZoneSkip is "
+                   "disabled. Zero means infinite maximum level.");
 
             getIni(ini, pluginFilterInvert, "bPluginFilterInvert",
                    ";Inverts the plugin filter, meaning that ONLY filtered NPCs have their levels changed. By default, "
@@ -484,6 +485,11 @@ namespace EREZ {
         }
 
         void RelevelActorbase(TESNPC* base, uint16_t minLevel, uint16_t maxLevel) {
+            if (minLevel > maxLevel && maxLevel != 0) {
+                logger::warn("minLevel ({}) > maxLevel ({}), setting maxLevel to minLevel", minLevel, maxLevel);
+                maxLevel = minLevel;
+            }
+
             uint32_t level = (uint32_t)base->actorData.level;
             auto settings = Settings::GetSingleton();
             auto baseFormID = base->GetFormID();
@@ -500,6 +506,12 @@ namespace EREZ {
             originalMin = original.originalMin;
             originalMax = original.originalMax;
 
+            if (originalMin > originalMax && originalMax != 0) {
+                logger::warn("originalMin ({}) > originalMax ({}), setting originalMax to originalMin", originalMin,
+                             originalMax);
+                originalMax = originalMin;
+            }
+
             // use float for calculations
             float minTmp = minLevel;
             float maxTmp = maxLevel;
@@ -512,15 +524,27 @@ namespace EREZ {
                 maxTmp *= factor;
             }
 
-            if (maxLevel == 0) {
-                // no maximum level
-                maxTmp = 255;
-            }
-
-            // if extend is false, limit to original levels
             if (!settings->extendLevels) {
-                minTmp = std::min(std::max(minTmp, originalMin * 1.0f), originalMax * 1.0f);
-                maxTmp = std::min(std::max(maxTmp, originalMin * 1.0f), originalMax * 1.0f);
+                if (originalMax == 0) {
+                    // original max level is unlimited -> only limit by originalMin
+                    minTmp = std::max(minTmp, originalMin * 1.0f);
+                    if (maxLevel == 0) {
+                        // if maxLevel is 0, there will be no maximum level
+                        maxTmp = 0;
+                    } else {
+                        maxTmp = std::max(maxTmp, originalMin * 1.0f);
+                    }
+                } else {
+                    // limit minTmp to original level range
+                    minTmp = std::min(std::max(minTmp, originalMin * 1.0f), originalMax * 1.0f);
+                    if (maxLevel == 0) {
+                        // if maxTmp == 0, max level is set as high as possible, which is originalMax
+                        maxTmp = originalMax;
+                    } else {
+                        // limit maxTmp to original level range
+                        maxTmp = std::min(std::max(maxTmp, originalMin * 1.0f), originalMax * 1.0f);
+                    }
+                }
             }
             uint16_t minNew = (uint16_t)minTmp;
             uint16_t maxNew = (uint16_t)maxTmp;
@@ -530,17 +554,17 @@ namespace EREZ {
                 minNew = 1;
             }
             if (maxNew <= 0) {
-                maxNew = 1;
+                maxNew = 0;
             }
 
             // so far nothing was changed
             // now perform relevel
             SetActorBaseData(base, originalMin, originalMax, minNew, maxNew);
 
-
-            logger::trace("    Relevel base [{:X}/{:X}]({}) from level range {}-{} to level range {}-{} using factor {} .", baseFormID,
-                          root->GetFormID(), base->GetName(), originalMin, originalMax, base->actorData.calcLevelMin,
-                          base->actorData.calcLevelMax, factor);
+            logger::trace(
+                "    Relevel base [{:X}/{:X}]({}) from level range {}-{} to level range {}-{} using factor {} .",
+                baseFormID, root->GetFormID(), base->GetName(), originalMin, originalMax, base->actorData.calcLevelMin,
+                base->actorData.calcLevelMax, factor);
         }
 
     public:
@@ -568,9 +592,6 @@ namespace EREZ {
             }
             logger::trace("Releveling reference [{:X}]({}).", actor->GetFormID(), actor->GetName());
 
-
-
-
             std::string ezMessagePrefix;
 
             // 0x1E is a special encounter zone object that is used to indicate no EZ in some cases, treat same as no EZ
@@ -582,14 +603,20 @@ namespace EREZ {
             // 3. read encounter zone from cell
 
             auto EZ = GetEncounterZone(actor);
-            if (!EZ || EZ->GetFormID() == 0x1E) {
+            if (EZ && EZ->GetFormID() != 0x1E) {
+                ezMessagePrefix = "Encounter zone found with function";
+            } else {
                 EZ = actor->extraList.GetEncounterZone();
-            }
-            if (!EZ || EZ->GetFormID() == 0x1E) {
-                EZ = loadedData->encounterZone;
-            }
-            if (!EZ || EZ->GetFormID() == 0x1E) {
-                EZ = NULL;
+                if (EZ && EZ->GetFormID() != 0x1E) {
+                    ezMessagePrefix = "Encounter zone found in extra data";
+                } else {
+                    EZ = loadedData->encounterZone;
+                    if (EZ && EZ->GetFormID() != 0x1E) {
+                        ezMessagePrefix = "Encounter zone found in cell data";
+                    } else {
+                        EZ = NULL;
+                    }
+                }
             }
 
             if (!EZ) {
@@ -629,8 +656,6 @@ namespace EREZ {
             } else {
                 logger::trace("    {}: ({})", ezMessagePrefix, levelRange);
             }
-
-
 
             std::lock_guard<std::mutex> guard(_lock);
             RelevelActorbase(base, minEZ, maxEZ);
