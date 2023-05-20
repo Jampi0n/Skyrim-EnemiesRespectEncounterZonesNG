@@ -61,12 +61,13 @@ namespace EREZ {
         int noZoneMax = 1000;
         bool noZoneSkip = true;
 
+        bool smartStatsCalculate = true;
+        int calculateStats = 1;
+
         bool pluginFilterInvert = false;
         std::string pluginFilterMaster = "";
         std::string pluginFilterAny = "";
         std::string pluginFilterWinning = "";
-
-        bool forceAutoCalcAttributes = true;
 
         bool manualUninstall = false;
 
@@ -112,6 +113,17 @@ namespace EREZ {
                 "15-50. With this setting enabled, it can get levels beyond that range. For instance if the encounter "
                 "zone has a minimum level of 60, the NPC will also have a minimum level of 60.");
 
+            getIni(ini, calculateStats, "iCalculateStats",
+                   ";After NPC levels are adjusted, their attributes and skill levels may not reflect the new level.\n"
+                   ";0: stats are not recalculated\n"
+                   ";1: emulates Skyrim's attribute and skill calculation. May not always be 100% accurate.\n"
+                   ";2: triggers Skyrim's level update which correctly sets attributes and skills, but can cause "
+                   "duplicate armors in NPC inventory.\n");
+
+            getIni(ini, smartStatsCalculate, "bSmartStatsCalculate",
+                   ";If bSmartStatsCalculate=1, uses the health value to determine whether stat recalculation is "
+                   "necessary.");
+
             getIni(ini, noZoneSkip, "bNoZoneSkip", ";If the NPC is not inside an encounter zone, the NPC is skipped.");
             getIni(ini, noZoneMin, "iNoZoneMin",
                    ";If the NPC is not inside an encounter zone, this is used as the minimum level if bNoZoneSkip is "
@@ -132,10 +144,6 @@ namespace EREZ {
             getIni(ini, pluginFilterWinning, "sPluginFilterWinning",
                    ";NPCs records that are winning records in these plugins are filtered. Comma separated list, for "
                    "example: Skyrim.esm,Dawguard.esm");
-
-            getIni(ini, forceAutoCalcAttributes, "bForceAutoCalcAttributes",
-                   ";Forces NPCs to recalculate their stats when the level is changed. This ensures attributes like "
-                   "health are calculated using the new level.");
 
             getIni(ini, manualUninstall, "bManualUninstall",
                    ";To remove level changes from a save, set this to true. Load the save and make a new save. "
@@ -224,6 +232,11 @@ namespace EREZ {
 
     class UnlevelManager {
     public:
+        int healthLevelBonus = 0;
+        int attributesPerLevelUp = 0;
+        int skillsPerLevelUp = 0;
+        int skillsBase = 0;
+
         static UnlevelManager* GetSingleton() {
             static UnlevelManager singleton;
             return &singleton;
@@ -261,7 +274,17 @@ namespace EREZ {
             }
         }
 
-        void OnDataInit() { ReadOriginalData(); }
+        void OnDataInit() {
+            ReadOriginalData();
+            skillsPerLevelUp = GameSettingCollection::GetSingleton()->GetSetting("iAVDskillsLevelUp")->GetSInt();
+            logger::trace("iAVDskillsLevelUp = {}", skillsPerLevelUp);
+            skillsBase = GameSettingCollection::GetSingleton()->GetSetting("iAVDSkillStart")->GetSInt();
+            logger::trace("iAVDSkillStart = {}", skillsBase);
+            attributesPerLevelUp = GameSettingCollection::GetSingleton()->GetSetting("iAVDhmsLevelUp")->GetSInt();
+            logger::trace("iAVDhmsLevelUp = {}", attributesPerLevelUp);
+            healthLevelBonus = GameSettingCollection::GetSingleton()->GetSetting("fNPCHealthLevelBonus")->GetFloat();
+            logger::trace("fNPCHealthLevelBonus = {}", healthLevelBonus);
+        }
 
     private:
         mutable std::mutex _lock;
@@ -484,6 +507,150 @@ namespace EREZ {
             }
         }
 
+        bool HasCorrectHealth(Actor* actor, TESNPC* base) {
+            auto level = actor->GetLevel();
+            auto healthWeight = base->npcClass->data.attributeWeights.health;
+            auto magickaWeight = base->npcClass->data.attributeWeights.magicka;
+            auto staminaWeight = base->npcClass->data.attributeWeights.stamina;
+            float totalWeight = healthWeight + magickaWeight + staminaWeight;
+
+            auto classHealth = std::lround((level - 1) * healthWeight * attributesPerLevelUp / totalWeight +
+                                           (level - 1) * healthLevelBonus);
+            auto health = base->actorData.healthOffset + classHealth + actor->GetRace()->data.startingHealth;
+            auto avOwner = actor->AsActorValueOwner();
+            auto computed = health;
+            auto current = avOwner->GetBaseActorValue(ActorValue::kHealth);
+
+            auto result = computed == current;
+            logger::trace("{} == {} = {}", computed, current, result);
+            return result;
+        }
+
+        void RecalculateStats(Actor* actor, TESNPC* base) {
+            auto level = actor->GetLevel();
+
+            logger::trace("computing attributes ...");
+
+            auto healthWeight = base->npcClass->data.attributeWeights.health;
+            auto magickaWeight = base->npcClass->data.attributeWeights.magicka;
+            auto staminaWeight = base->npcClass->data.attributeWeights.stamina;
+            float totalWeight = healthWeight + magickaWeight + staminaWeight;
+
+            auto classHealth = std::lround((level - 1) * healthWeight * attributesPerLevelUp / totalWeight +
+                                           (level - 1) * healthLevelBonus);
+            auto classMagicka = std::lround((level - 1) * magickaWeight * attributesPerLevelUp / totalWeight);
+            auto classStamina = std::lround((level - 1) * staminaWeight * attributesPerLevelUp / totalWeight);
+
+            auto health = base->actorData.healthOffset + classHealth + actor->GetRace()->data.startingHealth;
+            auto magicka = base->actorData.magickaOffset + classMagicka + actor->GetRace()->data.startingMagicka;
+            auto stamina = base->actorData.staminaOffset + classStamina + actor->GetRace()->data.startingStamina;
+
+            auto avOwner = actor->AsActorValueOwner();
+
+            bool requiresRecalculation = false;
+            if (avOwner->GetBaseActorValue(ActorValue::kHealth) != health) {
+                avOwner->SetBaseActorValue(ActorValue::kHealth, health);
+            }
+            if (avOwner->GetBaseActorValue(ActorValue::kMagicka) != magicka) {
+                avOwner->SetBaseActorValue(ActorValue::kMagicka, magicka);
+            }
+            if (avOwner->GetBaseActorValue(ActorValue::kStamina) != stamina) {
+                avOwner->SetBaseActorValue(ActorValue::kStamina, stamina);
+            }
+
+            logger::trace("computing skills ...");
+
+            std::uint8_t* skillWeights = reinterpret_cast<std::uint8_t*>(&base->npcClass->data.skillWeights);
+            std::uint32_t totalSkillWeights = 0;
+            for (std::size_t i = 0; i < 18; ++i) {
+                totalSkillWeights += skillWeights[i];
+            }
+
+            logger::trace("reading race bonus ...");
+
+            std::vector<std::uint8_t> currentSkill(18, skillsBase);
+            for (std::size_t i = 0; i < actor->GetRace()->data.kNumSkillBoosts; ++i) {
+                auto bonus = actor->GetRace()->data.skillBoosts[i].bonus;
+                if (bonus != 0) {
+                    int index = actor->GetRace()->data.skillBoosts[i].skill.underlying() - 6;
+                    if (index >= 0 && index < 18) {
+                        currentSkill[index] = skillsBase + bonus;
+                        logger::warn("raceBonus[{}] = {}", index, bonus);
+                    } else {
+                        logger::warn("encountered invalid racial skill bonus index: {}", index);
+                    }
+                } else {
+                    int index = actor->GetRace()->data.skillBoosts[i].skill.underlying() - 6;
+                    logger::trace("0 bonus has index: {}", index);
+                }
+            }
+
+            logger::trace("computing initial skill distribution...");
+
+            auto totalSkillPoints = skillsPerLevelUp * (level - 1);
+            auto remainingSkillPoints = totalSkillPoints;
+            std::list<std::pair<std::size_t, double>> sortedSkills;
+
+            for (std::size_t i = 0; i < 18; ++i) {
+                if (skillWeights[i] == 0) {
+                    continue;
+                }
+                auto add = 1.0 * totalSkillPoints * skillWeights[i] / totalSkillWeights;
+                auto addFloored = static_cast<int>(add);
+
+                auto addLimited = std::min(addFloored, 100 - currentSkill[i]);
+                currentSkill[i] += addLimited;
+                remainingSkillPoints -= addLimited;
+
+                if (currentSkill[i] < 100) {
+                    sortedSkills.push_back(std::make_pair(i, add - addFloored));
+                } else {
+                    // there is some fuckery going on with skyrim's skill distribution
+                    // this gets closer to the real values
+                    auto over = std::lround((add - addLimited) /
+                                            (1.0 * skillsPerLevelUp * skillWeights[i] / totalSkillWeights));
+                    over = std::min(3l, over);
+                    remainingSkillPoints -= 4 * over - 2;
+                }
+            }
+
+            logger::trace("computing excess skill distribution...");
+
+            while (remainingSkillPoints > 0) {
+                sortedSkills.sort(
+                    [&](const std::pair<std::size_t, double>& first, const std::pair<std::size_t, double>& second) {
+                        auto comp = first.second - second.second;
+                        if (comp != 0) {
+                            return comp > 0;
+                        }
+                        comp = currentSkill[first.first] - currentSkill[second.first];
+                        if (comp != 0) {
+                            return comp < 0;
+                        }
+                        comp = first.first - second.first;
+                        return comp > 0;
+                    });
+                auto changed = false;
+                for (auto& p : sortedSkills) {
+                    auto i = p.first;
+                    if (currentSkill[i] < 100) {
+                        currentSkill[i]++;
+                        remainingSkillPoints--;
+                        changed = true;
+                        if (remainingSkillPoints == 0) {
+                            break;
+                        }
+                    }
+                }
+                if (!changed) {
+                    break;
+                }
+            }
+            for (std::size_t i = 0; i < 18; ++i) {
+                avOwner->SetBaseActorValue(static_cast<ActorValue>(i + 6), currentSkill[i]);
+            }
+        }
+
         void RelevelActorbase(TESNPC* base, uint16_t minLevel, uint16_t maxLevel) {
             if (minLevel > maxLevel && maxLevel != 0) {
                 logger::warn("minLevel ({}) > maxLevel ({}), setting maxLevel to minLevel", minLevel, maxLevel);
@@ -660,19 +827,40 @@ namespace EREZ {
             std::lock_guard<std::mutex> guard(_lock);
             RelevelActorbase(base, minEZ, maxEZ);
 
-            if (settings->forceAutoCalcAttributes) {
-                auto factory = IFormFactory::GetConcreteFormFactoryByType<Script>();
-                if (factory) {
-                    auto consoleScript = factory->Create();
-                    if (consoleScript) {
-                        // the setlevel command forces recalculation of attributes (health, magicka, stamina)
-                        auto commandStr = "setlevel " + std::to_string(base->actorData.level) + " 0 " +
-                                          std::to_string(base->actorData.calcLevelMin) + " " +
-                                          std::to_string(base->actorData.calcLevelMax) + "";
-                        consoleScript->SetCommand(commandStr);
-                        consoleScript->CompileAndRun(actor);
-                        delete consoleScript;
+            if (settings->smartStatsCalculate) {
+                if (HasCorrectHealth(actor, base)) {
+                    logger::trace("Stat recalculation not necessary, because health is already correct.");
+                    return;
+                }
+            }
+
+            switch (settings->calculateStats) {
+                case 0: {
+                    break;
+                }
+                case 1: {
+                    RecalculateStats(actor, base);
+                    break;
+                }
+                case 2: {
+                    logger::trace("Using setlevel to trigger stat recalculation.");
+                    auto factory = IFormFactory::GetConcreteFormFactoryByType<Script>();
+                    if (factory) {
+                        auto consoleScript = factory->Create();
+                        if (consoleScript) {
+                            // the setlevel command forces recalculation of attributes (health, magicka, stamina)
+                            auto commandStr = "setlevel " + std::to_string(base->actorData.level) + " 0 " +
+                                              std::to_string(base->actorData.calcLevelMin) + " " +
+                                              std::to_string(base->actorData.calcLevelMax) + "";
+                            consoleScript->SetCommand(commandStr);
+                            consoleScript->CompileAndRun(actor);
+                            delete consoleScript;
+                        }
                     }
+                    break;
+                }
+                default: {
+                    break;
                 }
             }
         }

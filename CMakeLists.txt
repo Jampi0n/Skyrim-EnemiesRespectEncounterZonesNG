@@ -6,7 +6,7 @@ message("Using toolchain file ${CMAKE_TOOLCHAIN_FILE}.")
 ########################################################################################################################
 project(
         EnemiesRespectEncounterZones
-        VERSION 1.2.0
+        VERSION 1.3.0
         DESCRIPTION "EnemiesRespectEncounterZones"
         LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
@@ -15,7 +15,10 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 
 include(GNUInstallDirs)
 
-
+add_compile_options("$<$<NOT:$<CONFIG:Debug>>:/Zi>")
+add_link_options("$<$<NOT:$<CONFIG:Debug>>:/DEBUG>")
+add_link_options("$<$<NOT:$<CONFIG:Debug>>:/OPT:REF>")
+add_link_options("$<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>")
 
 configure_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/version.rc.in
@@ -103,8 +106,6 @@ foreach(DEPLOY_TARGET $ENV{CommonLibSSESamplePluginTargets})
     message("Adding deployment target ${DEPLOY_TARGET}.")
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> "${DEPLOY_TARGET}/SKSE/Plugins/")
-    if(${CMAKE_BUILD_TYPE} STREQUAL Debug OR ${CMAKE_BUILD_TYPE} STREQUAL RelWithDebInfo)
-        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_PDB_FILE:${PROJECT_NAME}> "${DEPLOY_TARGET}/SKSE/Plugins/")
-    endif()
 endforeach()
