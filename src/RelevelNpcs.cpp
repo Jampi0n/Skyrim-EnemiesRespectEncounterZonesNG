@@ -507,55 +507,62 @@ namespace EREZ {
             }
         }
 
-        bool HasCorrectHealth(Actor* actor, TESNPC* base) {
+        std::array<std::size_t, 3> RecalculateAttributes(Actor* actor, TESNPC* base) {
             auto level = actor->GetLevel();
+
             auto healthWeight = base->npcClass->data.attributeWeights.health;
             auto magickaWeight = base->npcClass->data.attributeWeights.magicka;
             auto staminaWeight = base->npcClass->data.attributeWeights.stamina;
-            float totalWeight = healthWeight + magickaWeight + staminaWeight;
+            auto totalWeight = healthWeight + magickaWeight + staminaWeight;
 
-            auto classHealth = std::lround((level - 1) * healthWeight * attributesPerLevelUp / totalWeight +
-                                           (level - 1) * healthLevelBonus);
-            auto health = base->actorData.healthOffset + classHealth + actor->GetRace()->data.startingHealth;
-            auto avOwner = actor->AsActorValueOwner();
-            auto computed = health;
-            auto current = avOwner->GetBaseActorValue(ActorValue::kHealth);
+            std::list<std::pair<std::size_t, std::size_t>> attributeIndices;
+            attributeIndices.push_back(std::make_pair(0, healthWeight));
+            attributeIndices.push_back(std::make_pair(1, magickaWeight));
+            attributeIndices.push_back(std::make_pair(2, staminaWeight));
 
-            auto result = computed == current;
-            logger::trace("{} == {} = {}", computed, current, result);
-            return result;
+            attributeIndices.sort([&](const std::pair<std::size_t, std::size_t>& first,
+                                      const std::pair<std::size_t, std::size_t>& second) {
+                auto comp = first.second - second.second;
+                if (comp != 0) {
+                    return comp > 0;
+                }
+                return (first.first - second.second) < 0;
+            });
+
+            std::array<std::size_t, 3> attributeValues = {};
+
+            auto totalAttributePoints = attributesPerLevelUp * (level - 1);
+            for (auto& pair : attributeIndices) {
+                auto index = pair.first;
+                auto weight = pair.second;
+                auto add = static_cast<std::size_t>((1.0 * weight) / totalWeight * totalAttributePoints);
+                attributeValues[index] = add;
+                totalAttributePoints -= add;
+                totalWeight -= weight;
+            }
+
+            attributeValues[0] +=
+                base->actorData.healthOffset + actor->GetRace()->data.startingHealth + (level - 1) * healthLevelBonus;
+            attributeValues[1] += base->actorData.magickaOffset + actor->GetRace()->data.startingMagicka;
+            attributeValues[2] += base->actorData.staminaOffset + actor->GetRace()->data.startingStamina;
+            return attributeValues;
         }
 
-        void RecalculateStats(Actor* actor, TESNPC* base) {
+        void RecalculateStats(Actor* actor, TESNPC* base, const std::array<std::size_t, 3>& attributes) {
             auto level = actor->GetLevel();
 
             logger::trace("computing attributes ...");
 
-            auto healthWeight = base->npcClass->data.attributeWeights.health;
-            auto magickaWeight = base->npcClass->data.attributeWeights.magicka;
-            auto staminaWeight = base->npcClass->data.attributeWeights.stamina;
-            float totalWeight = healthWeight + magickaWeight + staminaWeight;
-
-            auto classHealth = std::lround((level - 1) * healthWeight * attributesPerLevelUp / totalWeight +
-                                           (level - 1) * healthLevelBonus);
-            auto classMagicka = std::lround((level - 1) * magickaWeight * attributesPerLevelUp / totalWeight);
-            auto classStamina = std::lround((level - 1) * staminaWeight * attributesPerLevelUp / totalWeight);
-
-            auto health = base->actorData.healthOffset + classHealth + actor->GetRace()->data.startingHealth;
-            auto magicka = base->actorData.magickaOffset + classMagicka + actor->GetRace()->data.startingMagicka;
-            auto stamina = base->actorData.staminaOffset + classStamina + actor->GetRace()->data.startingStamina;
-
             auto avOwner = actor->AsActorValueOwner();
 
-            bool requiresRecalculation = false;
-            if (avOwner->GetBaseActorValue(ActorValue::kHealth) != health) {
-                avOwner->SetBaseActorValue(ActorValue::kHealth, health);
+            if (avOwner->GetBaseActorValue(ActorValue::kHealth) != attributes[0]) {
+                avOwner->SetBaseActorValue(ActorValue::kHealth, attributes[0]);
             }
-            if (avOwner->GetBaseActorValue(ActorValue::kMagicka) != magicka) {
-                avOwner->SetBaseActorValue(ActorValue::kMagicka, magicka);
+            if (avOwner->GetBaseActorValue(ActorValue::kMagicka) != attributes[1]) {
+                avOwner->SetBaseActorValue(ActorValue::kMagicka, attributes[1]);
             }
-            if (avOwner->GetBaseActorValue(ActorValue::kStamina) != stamina) {
-                avOwner->SetBaseActorValue(ActorValue::kStamina, stamina);
+            if (avOwner->GetBaseActorValue(ActorValue::kStamina) != attributes[2]) {
+                avOwner->SetBaseActorValue(ActorValue::kStamina, attributes[2]);
             }
 
             logger::trace("computing skills ...");
@@ -735,7 +742,7 @@ namespace EREZ {
         }
 
     public:
-        void ProcessActor(Actor* actor) {
+        void ProcessActor(Actor* actor, const char* eventName) {
             auto base = actor->GetActorBase();
             if (!StaticFilter(actor, base)) {
                 return;
@@ -757,7 +764,7 @@ namespace EREZ {
             if (!loadedData) {
                 return;
             }
-            logger::trace("Releveling reference [{:X}]({}).", actor->GetFormID(), actor->GetName());
+            logger::trace("Releveling reference [{:X}]({}).   {}", actor->GetFormID(), actor->GetName(), eventName);
 
             std::string ezMessagePrefix;
 
@@ -827,42 +834,63 @@ namespace EREZ {
             std::lock_guard<std::mutex> guard(_lock);
             RelevelActorbase(base, minEZ, maxEZ);
 
-            if (settings->smartStatsCalculate) {
-                if (HasCorrectHealth(actor, base)) {
-                    logger::trace("Stat recalculation not necessary, because health is already correct.");
-                    return;
-                }
-            }
+            auto refID = actor->GetHandle().native_handle();
 
-            switch (settings->calculateStats) {
-                case 0: {
-                    break;
-                }
-                case 1: {
-                    RecalculateStats(actor, base);
-                    break;
-                }
-                case 2: {
-                    logger::trace("Using setlevel to trigger stat recalculation.");
-                    auto factory = IFormFactory::GetConcreteFormFactoryByType<Script>();
-                    if (factory) {
-                        auto consoleScript = factory->Create();
-                        if (consoleScript) {
-                            // the setlevel command forces recalculation of attributes (health, magicka, stamina)
-                            auto commandStr = "setlevel " + std::to_string(base->actorData.level) + " 0 " +
-                                              std::to_string(base->actorData.calcLevelMin) + " " +
-                                              std::to_string(base->actorData.calcLevelMax) + "";
-                            consoleScript->SetCommand(commandStr);
-                            consoleScript->CompileAndRun(actor);
-                            delete consoleScript;
+            SKSE::GetTaskInterface()->AddTask([refID, eventName]() {
+                auto actor = Actor::LookupByHandle(refID).get();
+                auto settings = Settings::GetSingleton();
+                if (actor) {
+                    auto base = actor->GetActorBase();
+
+                    logger::trace("Recalculating reference [{:X}]({}).   {}", actor->GetFormID(), actor->GetName(),
+                                  eventName);
+
+                    auto attributes = UnlevelManager::GetSingleton()->RecalculateAttributes(actor, base);
+
+                    if (settings->smartStatsCalculate) {
+                        if (settings->smartStatsCalculate) {
+                            auto avOwner = actor->AsActorValueOwner();
+                            auto correctHealth = avOwner->GetBaseActorValue(ActorValue::kHealth) == attributes[0];
+                            logger::trace("{} == {} = {}", avOwner->GetBaseActorValue(ActorValue::kHealth), attributes[0], correctHealth);
+                            if (correctHealth) {
+                                logger::trace("Stat recalculation not necessary, because health is already correct.");
+                                return;
+                            }
                         }
                     }
-                    break;
+
+                    switch (settings->calculateStats) {
+                        case 0: {
+                            break;
+                        }
+                        case 1: {
+                            UnlevelManager::GetSingleton()->RecalculateStats(actor, base, attributes);
+                            break;
+                        }
+                        case 2: {
+                            logger::trace("Using setlevel to trigger stat recalculation.");
+                            auto factory = IFormFactory::GetConcreteFormFactoryByType<Script>();
+                            if (factory) {
+                                auto consoleScript = factory->Create();
+                                if (consoleScript) {
+                                    // the setlevel command forces recalculation of attributes (health, magicka,
+                                    // stamina)
+                                    auto commandStr = "setlevel " + std::to_string(base->actorData.level) + " 0 " +
+                                                      std::to_string(base->actorData.calcLevelMin) + " " +
+                                                      std::to_string(base->actorData.calcLevelMax) + "";
+                                    consoleScript->SetCommand(commandStr);
+                                    consoleScript->CompileAndRun(actor);
+                                    delete consoleScript;
+                                }
+                            }
+                            break;
+                        }
+                        default: {
+                            break;
+                        }
+                    }
                 }
-                default: {
-                    break;
-                }
-            }
+            });
         }
 
     private:
@@ -898,7 +926,7 @@ namespace EREZ {
                         auto ref = form->AsReference();
                         auto actor = static_cast<Actor*>(ref);
                         if (actor) {
-                            UnlevelManager::GetSingleton()->ProcessActor(actor);
+                            UnlevelManager::GetSingleton()->ProcessActor(actor, "TESObjectLoadedEvent");
                         }
                     }
                 }
@@ -928,7 +956,7 @@ namespace EREZ {
             if (ref->GetFormType() == FormType::ActorCharacter) {
                 auto actor = static_cast<Actor*>(ref);
                 if (actor) {
-                    UnlevelManager::GetSingleton()->ProcessActor(actor);
+                    UnlevelManager::GetSingleton()->ProcessActor(actor, "TESInitScriptEvent");
                 }
             }
             return RE::BSEventNotifyControl::kContinue;
@@ -958,7 +986,7 @@ namespace EREZ {
                 if (ref->GetFormType() == FormType::ActorCharacter) {
                     auto actor = static_cast<Actor*>(ref);
                     if (actor) {
-                        UnlevelManager::GetSingleton()->ProcessActor(actor);
+                        UnlevelManager::GetSingleton()->ProcessActor(actor, "TESCellAttachDetachEvent");
                     }
                 }
             }
@@ -989,7 +1017,7 @@ namespace EREZ {
                 if (ref->GetFormType() == FormType::ActorCharacter) {
                     auto actor = static_cast<Actor*>(ref);
                     if (actor) {
-                        UnlevelManager::GetSingleton()->ProcessActor(actor);
+                        UnlevelManager::GetSingleton()->ProcessActor(actor, "TESMoveAttachDetachEvent");
                     }
                 }
             }
