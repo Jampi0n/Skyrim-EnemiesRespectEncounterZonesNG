@@ -515,18 +515,17 @@ namespace EREZ {
             auto staminaWeight = base->npcClass->data.attributeWeights.stamina;
             auto totalWeight = healthWeight + magickaWeight + staminaWeight;
 
-            std::list<std::pair<std::size_t, std::size_t>> attributeIndices;
+            std::list<std::pair<int, int>> attributeIndices;
             attributeIndices.push_back(std::make_pair(0, healthWeight));
             attributeIndices.push_back(std::make_pair(1, magickaWeight));
             attributeIndices.push_back(std::make_pair(2, staminaWeight));
 
-            attributeIndices.sort([&](const std::pair<std::size_t, std::size_t>& first,
-                                      const std::pair<std::size_t, std::size_t>& second) {
+            attributeIndices.sort([&](const std::pair<int, int>& first, const std::pair<int, int>& second) {
                 auto comp = first.second - second.second;
                 if (comp != 0) {
                     return comp > 0;
                 }
-                return (first.first - second.second) < 0;
+                return (first.first - second.first) < 0;
             });
 
             std::array<std::size_t, 3> attributeValues = {};
@@ -851,7 +850,6 @@ namespace EREZ {
                         if (settings->smartStatsCalculate) {
                             auto avOwner = actor->AsActorValueOwner();
                             auto correctHealth = avOwner->GetBaseActorValue(ActorValue::kHealth) == attributes[0];
-                            logger::trace("{} == {} = {}", avOwner->GetBaseActorValue(ActorValue::kHealth), attributes[0], correctHealth);
                             if (correctHealth) {
                                 logger::trace("Stat recalculation not necessary, because health is already correct.");
                                 return;
@@ -861,9 +859,11 @@ namespace EREZ {
 
                     switch (settings->calculateStats) {
                         case 0: {
+                            logger::trace("Stats recalculation is disabled.");
                             break;
                         }
                         case 1: {
+                            logger::trace("Recalculating stats ...");
                             UnlevelManager::GetSingleton()->RecalculateStats(actor, base, attributes);
                             break;
                         }
