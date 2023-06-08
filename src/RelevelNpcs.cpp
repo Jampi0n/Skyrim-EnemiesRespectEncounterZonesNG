@@ -121,7 +121,7 @@ namespace EREZ {
                    "duplicate armors in NPC inventory.\n");
 
             getIni(ini, smartStatsCalculate, "bSmartStatsCalculate",
-                   ";If bSmartStatsCalculate=1, uses the health value to determine whether stat recalculation is "
+                   ";If bSmartStatsCalculate=true, uses the health value to determine whether stat recalculation is "
                    "necessary.");
 
             getIni(ini, noZoneSkip, "bNoZoneSkip", ";If the NPC is not inside an encounter zone, the NPC is skipped.");
@@ -507,7 +507,7 @@ namespace EREZ {
             }
         }
 
-        std::array<std::size_t, 3> RecalculateAttributes(Actor* actor, TESNPC* base) {
+        std::array<std::int64_t, 3> RecalculateAttributes(Actor* actor, TESNPC* base) {
             auto level = actor->GetLevel();
 
             auto healthWeight = base->npcClass->data.attributeWeights.health;
@@ -528,13 +528,13 @@ namespace EREZ {
                 return (first.first - second.first) < 0;
             });
 
-            std::array<std::size_t, 3> attributeValues = {};
+            std::array<std::int64_t, 3> attributeValues = {};
 
             auto totalAttributePoints = attributesPerLevelUp * (level - 1);
             for (auto& pair : attributeIndices) {
                 auto index = pair.first;
                 auto weight = pair.second;
-                auto add = static_cast<std::size_t>((1.0 * weight) / totalWeight * totalAttributePoints);
+                auto add = static_cast<std::int64_t>((1.0 * weight) / totalWeight * totalAttributePoints);
                 attributeValues[index] = add;
                 totalAttributePoints -= add;
                 totalWeight -= weight;
@@ -544,10 +544,15 @@ namespace EREZ {
                 base->actorData.healthOffset + actor->GetRace()->data.startingHealth + (level - 1) * healthLevelBonus;
             attributeValues[1] += base->actorData.magickaOffset + actor->GetRace()->data.startingMagicka;
             attributeValues[2] += base->actorData.staminaOffset + actor->GetRace()->data.startingStamina;
+
+            attributeValues[0] = std::max(attributeValues[0], 0ll);
+            attributeValues[1] = std::max(attributeValues[1], 0ll);
+            attributeValues[2] = std::max(attributeValues[2], 0ll);
+
             return attributeValues;
         }
 
-        void RecalculateStats(Actor* actor, TESNPC* base, const std::array<std::size_t, 3>& attributes) {
+        void RecalculateStats(Actor* actor, TESNPC* base, const std::array<std::int64_t, 3>& attributes) {
             auto level = actor->GetLevel();
 
             logger::trace("computing attributes ...");
@@ -581,7 +586,7 @@ namespace EREZ {
                     int index = actor->GetRace()->data.skillBoosts[i].skill.underlying() - 6;
                     if (index >= 0 && index < 18) {
                         currentSkill[index] = skillsBase + bonus;
-                        logger::warn("raceBonus[{}] = {}", index, bonus);
+                        logger::trace("raceBonus[{}] = {}", index, bonus);
                     } else {
                         logger::warn("encountered invalid racial skill bonus index: {}", index);
                     }
