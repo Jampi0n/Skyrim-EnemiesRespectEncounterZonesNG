@@ -747,7 +747,13 @@ namespace EREZ {
 
     public:
         void ProcessActor(Actor* actor, const char* eventName) {
+            if (!actor) {
+                return;
+            }
             auto base = actor->GetActorBase();
+            if (!base) {
+                return;
+            }
             if (!StaticFilter(actor, base)) {
                 return;
             }
@@ -929,9 +935,11 @@ namespace EREZ {
                 if (form) {
                     if (form->GetFormType() == FormType::ActorCharacter) {
                         auto ref = form->AsReference();
-                        auto actor = static_cast<Actor*>(ref);
-                        if (actor) {
-                            UnlevelManager::GetSingleton()->ProcessActor(actor, "TESObjectLoadedEvent");
+                        if (ref) {
+                            auto actor = static_cast<Actor*>(ref);
+                            if (actor) {
+                                UnlevelManager::GetSingleton()->ProcessActor(actor, "TESObjectLoadedEvent");
+                            }
                         }
                     }
                 }
@@ -957,11 +965,13 @@ namespace EREZ {
 
         RE::BSEventNotifyControl ProcessEvent(const RE::TESInitScriptEvent* a_event,
                                               RE::BSTEventSource<RE::TESInitScriptEvent>* a_eventSource) override {
-            auto ref = a_event->objectInitialized.get();
-            if (ref->GetFormType() == FormType::ActorCharacter) {
-                auto actor = static_cast<Actor*>(ref);
-                if (actor) {
-                    UnlevelManager::GetSingleton()->ProcessActor(actor, "TESInitScriptEvent");
+            if (a_event->objectInitialized) {
+                auto ref = a_event->objectInitialized.get();
+                if (ref && ref->GetFormType() == FormType::ActorCharacter) {
+                    auto actor = static_cast<Actor*>(ref);
+                    if (actor) {
+                        UnlevelManager::GetSingleton()->ProcessActor(actor, "TESInitScriptEvent");
+                    }
                 }
             }
             return RE::BSEventNotifyControl::kContinue;
@@ -987,9 +997,9 @@ namespace EREZ {
             const RE::TESCellAttachDetachEvent* a_event,
             RE::BSTEventSource<RE::TESCellAttachDetachEvent>* a_eventSource) override {
             if (a_event->attached) {
-                auto ref = a_event->reference;
-                if (ref->GetFormType() == FormType::ActorCharacter) {
-                    auto actor = static_cast<Actor*>(ref);
+                auto& ref = a_event->reference;
+                if (ref && ref->GetFormType() == FormType::ActorCharacter) {
+                    auto actor = static_cast<Actor*>(ref.get());
                     if (actor) {
                         UnlevelManager::GetSingleton()->ProcessActor(actor, "TESCellAttachDetachEvent");
                     }
@@ -1017,9 +1027,9 @@ namespace EREZ {
         RE::BSEventNotifyControl ProcessEvent(
             const RE::TESMoveAttachDetachEvent* a_event,
             RE::BSTEventSource<RE::TESMoveAttachDetachEvent>* a_eventSource) override {
-            if (a_event->isCellAttached) {
+            if (a_event->isCellAttached && a_event->movedRef) {
                 auto ref = a_event->movedRef.get();
-                if (ref->GetFormType() == FormType::ActorCharacter) {
+                if (ref && ref->GetFormType() == FormType::ActorCharacter) {
                     auto actor = static_cast<Actor*>(ref);
                     if (actor) {
                         UnlevelManager::GetSingleton()->ProcessActor(actor, "TESMoveAttachDetachEvent");
