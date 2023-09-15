@@ -372,8 +372,8 @@ namespace EREZ {
         }
 
         void ReadOriginalData() {
-            // Before any save is loaded all npc records are processed to store the original level values the original
-            // values are required for the lower and upper bounds
+            // Before any save is loaded all npc records are processed to store the original level values
+            // the original values are required for the lower and upper bounds
             logger::debug("Initializing npc data...");
             int count = 0;
             const auto dataHandler = RE::TESDataHandler::GetSingleton();
@@ -616,8 +616,10 @@ namespace EREZ {
                 if (currentSkill[i] < 100) {
                     sortedSkills.push_back(std::make_pair(i, add - addFloored));
                 } else {
-                    // there is some fuckery going on with skyrim's skill distribution
-                    // this gets closer to the real values
+                    // the formula on the wiki does not go into detail how skills are distributed once at least one skill reaches 100
+                    // it seems that the skill points are redistributed to other skills, but in an unexpected way
+                    // to account for this weird behavior the following adjustments are made
+                    // they are not 100% accurate, but are closer to the real values than any reasonable algorithm I have found so far
                     auto over = std::lround((add - addLimited) /
                                             (1.0 * skillsPerLevelUp * skillWeights[i] / totalSkillWeights));
                     over = std::min(3l, over);
