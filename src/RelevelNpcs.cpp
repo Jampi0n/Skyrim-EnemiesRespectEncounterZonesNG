@@ -507,12 +507,13 @@ namespace EREZ {
             }
         }
 
-        std::array<std::int64_t, 3> RecalculateAttributes(Actor* actor, TESNPC* base) {
-            auto level = actor->GetLevel();
+        std::array<std::int64_t, 3> RecalculateAttributes(Actor* actor, TESNPC* base, TESClass* npcClass) {
+            std::array<std::int64_t, 3> attributeValues = {};
 
-            auto healthWeight = base->npcClass->data.attributeWeights.health;
-            auto magickaWeight = base->npcClass->data.attributeWeights.magicka;
-            auto staminaWeight = base->npcClass->data.attributeWeights.stamina;
+            auto level = actor->GetLevel();
+            auto healthWeight = npcClass->data.attributeWeights.health;
+            auto magickaWeight = npcClass->data.attributeWeights.magicka;
+            auto staminaWeight = npcClass->data.attributeWeights.stamina;
             auto totalWeight = healthWeight + magickaWeight + staminaWeight;
 
             std::list<std::pair<int, int>> attributeIndices;
@@ -527,8 +528,6 @@ namespace EREZ {
                 }
                 return (first.first - second.first) < 0;
             });
-
-            std::array<std::int64_t, 3> attributeValues = {};
 
             auto totalAttributePoints = attributesPerLevelUp * (level - 1);
             for (auto& pair : attributeIndices) {
@@ -616,10 +615,11 @@ namespace EREZ {
                 if (currentSkill[i] < 100) {
                     sortedSkills.push_back(std::make_pair(i, add - addFloored));
                 } else {
-                    // the formula on the wiki does not go into detail how skills are distributed once at least one skill reaches 100
-                    // it seems that the skill points are redistributed to other skills, but in an unexpected way
-                    // to account for this weird behavior the following adjustments are made
-                    // they are not 100% accurate, but are closer to the real values than any reasonable algorithm I have found so far
+                    // the formula on the wiki does not go into detail how skills are distributed once at least one
+                    // skill reaches 100 it seems that the skill points are redistributed to other skills, but in an
+                    // unexpected way to account for this weird behavior the following adjustments are made they are not
+                    // 100% accurate, but are closer to the real values than any reasonable algorithm I have found so
+                    // far
                     auto over = std::lround((add - addLimited) /
                                             (1.0 * skillsPerLevelUp * skillWeights[i] / totalSkillWeights));
                     over = std::min(3l, over);
@@ -851,56 +851,61 @@ namespace EREZ {
             SKSE::GetTaskInterface()->AddTask([refID, eventName]() {
                 auto actor = Actor::LookupByHandle(refID).get();
                 auto settings = Settings::GetSingleton();
-                if (actor) {
-                    auto base = actor->GetActorBase();
+                if (!actor) {
+                    return;
+                }
+                auto base = actor->GetActorBase();
+                if (!base) {
+                    return;
+                }
+                auto npcClass = base->npcClass;
+                if (!npcClass) {
+                    return;
+                }
+                logger::trace("Recalculating reference [{:X}]({}).   {}", actor->GetFormID(), actor->GetName(),
+                              eventName);
 
-                    logger::trace("Recalculating reference [{:X}]({}).   {}", actor->GetFormID(), actor->GetName(),
-                                  eventName);
+                auto attributes = UnlevelManager::GetSingleton()->RecalculateAttributes(actor, base, npcClass);
 
-                    auto attributes = UnlevelManager::GetSingleton()->RecalculateAttributes(actor, base);
-
-                    if (settings->smartStatsCalculate) {
-                        if (settings->smartStatsCalculate) {
-                            auto avOwner = actor->AsActorValueOwner();
-                            auto correctHealth = avOwner->GetBaseActorValue(ActorValue::kHealth) == attributes[0];
-                            if (correctHealth) {
-                                logger::trace("Stat recalculation not necessary, because health is already correct.");
-                                return;
-                            }
-                        }
+                if (settings->smartStatsCalculate) {
+                    auto avOwner = actor->AsActorValueOwner();
+                    auto correctHealth = avOwner->GetBaseActorValue(ActorValue::kHealth) == attributes[0];
+                    if (correctHealth) {
+                        logger::trace("Stat recalculation not necessary, because health is already correct.");
+                        return;
                     }
+                }
 
-                    switch (settings->calculateStats) {
-                        case 0: {
-                            logger::trace("Stats recalculation is disabled.");
-                            break;
-                        }
-                        case 1: {
-                            logger::trace("Recalculating stats ...");
-                            UnlevelManager::GetSingleton()->RecalculateStats(actor, base, attributes);
-                            break;
-                        }
-                        case 2: {
-                            logger::trace("Using setlevel to trigger stat recalculation.");
-                            auto factory = IFormFactory::GetConcreteFormFactoryByType<Script>();
-                            if (factory) {
-                                auto consoleScript = factory->Create();
-                                if (consoleScript) {
-                                    // the setlevel command forces recalculation of attributes (health, magicka,
-                                    // stamina)
-                                    auto commandStr = "setlevel " + std::to_string(base->actorData.level) + " 0 " +
-                                                      std::to_string(base->actorData.calcLevelMin) + " " +
-                                                      std::to_string(base->actorData.calcLevelMax) + "";
-                                    consoleScript->SetCommand(commandStr);
-                                    consoleScript->CompileAndRun(actor);
-                                    delete consoleScript;
-                                }
+                switch (settings->calculateStats) {
+                    case 0: {
+                        logger::trace("Stats recalculation is disabled.");
+                        break;
+                    }
+                    case 1: {
+                        logger::trace("Recalculating stats ...");
+                        UnlevelManager::GetSingleton()->RecalculateStats(actor, base, attributes);
+                        break;
+                    }
+                    case 2: {
+                        logger::trace("Using setlevel to trigger stat recalculation.");
+                        auto factory = IFormFactory::GetConcreteFormFactoryByType<Script>();
+                        if (factory) {
+                            auto consoleScript = factory->Create();
+                            if (consoleScript) {
+                                // the setlevel command forces recalculation of attributes (health, magicka,
+                                // stamina)
+                                auto commandStr = "setlevel " + std::to_string(base->actorData.level) + " 0 " +
+                                                  std::to_string(base->actorData.calcLevelMin) + " " +
+                                                  std::to_string(base->actorData.calcLevelMax) + "";
+                                consoleScript->SetCommand(commandStr);
+                                consoleScript->CompileAndRun(actor);
+                                delete consoleScript;
                             }
-                            break;
                         }
-                        default: {
-                            break;
-                        }
+                        break;
+                    }
+                    default: {
+                        break;
                     }
                 }
             });
